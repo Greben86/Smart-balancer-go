@@ -1,0 +1,118 @@
+{
+  "dashboard": {
+    "title": "Go Metrics Service Dashboard",
+    "tags": ["go", "metrics", "iot"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "schemaVersion": 38,
+    "version": 1,
+    "panels": [
+      {
+        "id": 1,
+        "title": "RPS (Requests Per Second)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "rate(service_rps_total[1m])",
+            "legendFormat": "{{status}}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps"
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Request Latency",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(service_latency_seconds_bucket[5m]))",
+            "legendFormat": "p95",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(service_latency_seconds_bucket[5m]))",
+            "legendFormat": "p99",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Anomaly Rate",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "service_anomaly_rate",
+            "legendFormat": "Anomaly Rate %",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "refId": "A"
+          },
+          {
+            "expr": "rate(service_anomalies_total[1m]) * 60",
+            "legendFormat": "Anomalies/min",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent"
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "Prediction Value",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "service_prediction_value",
+            "legendFormat": "Rolling Average Prediction",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+# my global config
+global:
+  scrape_interval: 5s     # Set the scrape interval to every 5 seconds. Default is every 1 minute.
+  evaluation_interval: 5s # Evaluate rules every 5 seconds. The default is every 1 minute.
+
+scrape_configs:
+  - job_name: 'go-service' # The job name is assigned to scraped metrics by default.
+    metrics_path: '/prometheus'               # The HTTP resource path on which to fetch metrics from targets.
+    scrape_interval: 5s                       # How frequently to scrape targets from this job.
+    static_configs:                           # A static_config allows specifying a list of targets and a common label set for them
+      - targets: ['go-service:8080']

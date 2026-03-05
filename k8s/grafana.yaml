@@ -1,0 +1,28 @@
+# Настройка постоянного хранилища
+persistence:
+  enabled: true
+  size: 5Gi
+  # storageClassName: "standard" # Укажите StorageClass, если требуется
+
+# Установка пароля администратора
+adminPassword: "123"
+
+# Настройка автоматического добавления источника данных Prometheus
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      access: proxy # Grafana будет проксировать запросы
+      url: http://prometheus-server.default.svc.cluster.local # URL сервиса Prometheus в кластере
+      isDefault: true # Сделать источник данных по умолчанию
+
+# Настройка автоматического импорта дашбордов из ConfigMaps (sidecar)
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard # Метка для ConfigMaps с дашбордами
+  datasources:
+    enabled: true
+    label: grafana_datasource # Метка для ConfigMaps с источниками данных
