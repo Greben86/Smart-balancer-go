@@ -1,25 +1,10 @@
-version: '3.9'
+# version field is obsolete and ignored in current Docker Compose, kept for reference only
 
 services:
-  # redis:
-  #   image: redis:7-alpine
-  #   ports:
-  #     - "6379:6379"
-  #   command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-  #   volumes:
-  #     - redis-data:/data
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 10s
-  #     timeout: 3s
-  #     retries: 3
-  #   networks:
-  #     - service-network
-
   go-service:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ./smart-balancer-go
+      dockerfile: ./smart-balancer-go/Dockerfile
     ports:
       - "8080:8080"
     environment:
@@ -33,6 +18,21 @@ services:
       retries: 3
     networks:
       - service-network
+
+  test-client:
+    build:
+      context: ./test-client
+      dockerfile: ./test-client/Dockerfile
+    environment:
+      - TARGET_URL=http://go-service:8080/heartbeat
+      - INTERVAL=1s
+    restart: unless-stopped
+    networks:
+      - service-network
+    depends_on:
+      - go-service
+    deploy:
+      replicas: 10
 
   # prometheus:
   #   image: prom/prometheus:latest
