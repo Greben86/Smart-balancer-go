@@ -1,18 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"strings"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"strings"
+	"github.com/valyala/fasthttp"
 )
 
 var (
@@ -61,11 +63,20 @@ func (r *RoundRobinBalancer) Next() string {
 
 func initMetrics() {
 	// Регистрация метрик Prometheus
-	http.Handle("/metrics", promhttp.Handler())
 	go func() {
 		log.Println("Metrics server listening on :9090")
-		log.Fatal(http.ListenAndServe(":9090", nil))
+		if err := fasthttp.ListenAndServe(":9090", prometheusHandler); err != nil {
+			log.Fatalf("cannot start metrics server: %v", err)
+		}
 	}()
+}
+
+func prometheusHandler(ctx *fasthttp.RequestCtx) {
+	if string(ctx.Path()) == "/metrics" {
+		promhttp.Handler().ServeHTTP(ctx, ctx.Request.Request)
+	} else {
+		ctx.Error("not found", fasthttp.StatusNotFound)
+	}
 }
 
 func main() {
@@ -84,7 +95,7 @@ func main() {
 			counterMutex.Lock()
 			requestCounters[trimmed] = &counter
 			counterMutex.Unlock()
-	}
+		}
 	}
 
 	if len(backends) == 0 {
@@ -92,77 +103,97 @@ func main() {
 	}
 
 	balancer := NewRoundRobinBalancer(backends)
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
+	httpClient := &fasthttp.Client{
+		MaxIdleConnDuration: 30 * time.Second,
 	}
 
-	// Настройка Gin-роутера
-	r := gin.Default()
-
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "healthy", "backends": backends})
-	})
-
-	r.POST("/heartbeat", func(c *gin.Context) {
-		clientIP := c.ClientIP()
-		log.Printf("Heartbeat received from IP: %s", clientIP)
-		c.JSON(http.StatusOK, gin.H{"status": "heartbeat received", "client_ip": clientIP})
-	})
-
-	r.NoRoute(func(c *gin.Context) {
-		start := time.Now()
-
-		backendURL := balancer.Next()
-
-		// Формирование запроса к бэкенду
-		req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, backendURL+c.Request.URL.String(), c.Request.Body)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request to backend"})
-			return
+	// Настройка обработчика запросов
+	requestHandler := func(ctx *fasthttp.RequestCtx) {
+		switch string(ctx.Path()) {
+		case "/health":
+			healthHandler(ctx)
+		case "/heartbeat":
+			heartbeatHandler(ctx)
+		default:
+			proxyHandler(ctx, balancer, httpClient, backends)
 		}
+	}
 
-		// Копирование заголовков
-		for key, values := range c.Request.Header {
-			for _, value := range values {
-				req.Header.Add(key, value)
-			}
-		}
-
-		// Выполнение запроса
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			log.Printf("Error forwarding request to %s: %v", backendURL, err)
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backend service unavailable"})
-			return
-		}
-		defer resp.Body.Close()
-
-		// Копирование заголовков ответа
-		for key, values := range resp.Header {
-			for _, value := range values {
-				c.Header(key, value)
-			}
-		}
-
-		// Копирование статуса и тела
-		c.Status(resp.StatusCode)
-		c.DataFromReader(resp.StatusCode, resp.ContentLength, resp.Header.Get("Content-Type"), resp.Body, nil)
-
-		// Обновление счётчиков
-		counterMutex.Lock()
-		counter := requestCounters[backendURL]
-		if counter != nil {
-			atomic.AddUint64(counter, 1)
-		}
-		counterMutex.Unlock()
-
-		// Обновление метрик Prometheus
-		requestsTotal.WithLabelValues(backendURL).Inc()
-		duration := time.Since(start).Seconds()
-		requestDuration.WithLabelValues(backendURL).Observe(duration)
-	})
-
+	// Запуск HTTP-сервера
 	log.Printf("Smart balancer started on %s, forwarding to %v", *port, backends)
-	log.Fatal(r.Run(*port))
+	if err := fasthttp.ListenAndServe(*port, requestHandler); err != nil {
+		log.Fatalf("Error starting server: %v", err)
+	}
 }
 
+func healthHandler(ctx *fasthttp.RequestCtx) {
+	ctx.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"healthy\", \"backends\": %s}", backendsJSON(backends)))
+}
+
+func heartbeatHandler(ctx *fasthttp.RequestCtx) {
+	clientIP := ctx.RemoteIP().String()
+	log.Printf("Heartbeat received from IP: %s", clientIP)
+	ctx.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"heartbeat received\", \"client_ip\": \"%s\"}", clientIP))
+}
+
+func backendsJSON(backends []string) string {
+	json, _ := json.Marshal(backends)
+	return string(json)
+}
+
+func proxyHandler(ctx *fasthttp.RequestCtx, balancer *RoundRobinBalancer, client *fasthttp.Client, backends []string) {
+	start := time.Now()
+
+	backendURL := balancer.Next()
+
+	// Создание запроса к бэкенду
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+
+	req.SetRequestURI(backendURL + string(ctx.Path()))
+	req.Header.SetMethodBytes(ctx.Method())
+	req.SetBody(ctx.PostBody())
+
+	// Копирование заголовков
+	ctx.Request.Header.VisitAll(func(key, value []byte) {
+		req.Header.SetBytesKV(key, value)
+	})
+
+	// Выполнение запроса
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	err := client.Do(req, resp)
+	if err != nil {
+		log.Printf("Error forwarding request to %s: %v", backendURL, err)
+		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
+		ctx.SetBodyString("{\"error\": \"Backend service unavailable\"}")
+		return
+	}
+
+	// Копирование заголовков ответа
+	resp.Header.VisitAll(func(key, value []byte) {
+		ctx.Response.Header.SetBytesKV(key, value)
+	})
+
+	// Копирование статуса и тела
+	ctx.SetStatusCode(resp.StatusCode())
+	ctx.SetBody(resp.Body())
+
+	// Обновление счётчиков
+	counterMutex.Lock()
+	counter := requestCounters[backendURL]
+	if counter != nil {
+		atomic.AddUint64(counter, 1)
+	}
+	counterMutex.Unlock()
+
+	// Обновление метрик Prometheus
+	requestsTotal.WithLabelValues(backendURL).Inc()
+	duration := time.Since(start).Seconds()
+	requestDuration.WithLabelValues(backendURL).Observe(duration)
+}
