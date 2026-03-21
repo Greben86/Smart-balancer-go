@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,10 +74,39 @@ func initMetrics() {
 
 func prometheusHandler(ctx *fasthttp.RequestCtx) {
 	if string(ctx.Path()) == "/metrics" {
-		promhttp.Handler().ServeHTTP(ctx, ctx.Request.Request)
+		// Создаём net/http-совместимый запрос и ответ
+		req := &http.Request{Method: "GET"}
+		rw := newResponseWriter(ctx)
+		promhttp.Handler().ServeHTTP(rw, req)
 	} else {
 		ctx.Error("not found", fasthttp.StatusNotFound)
 	}
+}
+
+// Адаптер для преобразования *fasthttp.RequestCtx в http.ResponseWriter
+type responseWriter struct {
+	ctx *fasthttp.RequestCtx
+}
+
+func newResponseWriter(ctx *fasthttp.RequestCtx) *responseWriter {
+	return &responseWriter{ctx: ctx}
+}
+
+func (rw *responseWriter) Header() http.Header {
+	h := make(http.Header)
+	rw.ctx.Response.Header.VisitAll(func(key, value []byte) {
+		h.Set(string(key), string(value))
+	})
+	return h
+}
+
+func (rw *responseWriter) Write(data []byte) (int, error) {
+	rw.ctx.Write(data)
+	return len(data), nil
+}
+
+func (rw *responseWriter) WriteHeader(statusCode int) {
+	rw.ctx.SetStatusCode(statusCode)
 }
 
 func main() {
@@ -129,7 +159,7 @@ func main() {
 func healthHandler(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"healthy\", \"backends\": %s}", backendsJSON(backends)))
+	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"healthy\", \"backends\": ...}"))
 }
 
 func heartbeatHandler(ctx *fasthttp.RequestCtx) {
