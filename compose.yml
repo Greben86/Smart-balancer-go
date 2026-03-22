@@ -1,10 +1,8 @@
-# version field is obsolete and ignored in current Docker Compose, kept for reference only
-
 services:
   go-service:
     build:
       context: ./smart-balancer-go
-      dockerfile: ./smart-balancer-go/Dockerfile
+      dockerfile: ./Dockerfile
     ports:
       - "8080:8080"
     environment:
@@ -22,7 +20,7 @@ services:
   test-client:
     build:
       context: ./test-client
-      dockerfile: ./test-client/Dockerfile
+      dockerfile: ./Dockerfile
     environment:
       - TARGET_URL=http://go-service:8080/heartbeat
       - INTERVAL=1s
@@ -83,8 +81,8 @@ services:
   #     - go-service
   #     - prometheus
 
-volumes:
-  redis-data:
+# volumes:
+#   redis-data:
 
 networks:
   service-network:

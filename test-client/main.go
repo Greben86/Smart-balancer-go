@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -30,7 +29,7 @@ func main() {
 	defer eventTicker.Stop()
 
 	for range eventTicker.C {
-		headbeat(targetURL)
+		heartbeat(targetURL)
 	}
 }
 
