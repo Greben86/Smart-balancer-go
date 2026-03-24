@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"strings"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -21,6 +19,7 @@ import (
 var (
 	backendURLs     = flag.String("backends", "http://backend1:8080,http://backend2:8080", "Comma-separated list of backend service URLs")
 	port            = flag.String("port", ":8080", "Port to listen on")
+	config          = flag.String("config", "application.yml", "Configuration file")
 	requestCounters = make(map[string]*uint64)
 	counterMutex    sync.RWMutex
 )
@@ -116,21 +115,21 @@ func main() {
 	initMetrics()
 
 	backends := []string{}
-	for _, b := range strings.Split(*backendURLs, ",") {
-		trimmed := strings.TrimSpace(b)
-		if trimmed != "" {
-			backends = append(backends, trimmed)
-			// Инициализация счётчиков
-			counter := uint64(0)
-			counterMutex.Lock()
-			requestCounters[trimmed] = &counter
-			counterMutex.Unlock()
-		}
-	}
+	// for _, b := range strings.Split(*backendURLs, ",") {
+	// 	trimmed := strings.TrimSpace(b)
+	// 	if trimmed != "" {
+	// 		backends = append(backends, trimmed)
+	// 		// Инициализация счётчиков
+	// 		counter := uint64(0)
+	// 		counterMutex.Lock()
+	// 		requestCounters[trimmed] = &counter
+	// 		counterMutex.Unlock()
+	// 	}
+	// }
 
-	if len(backends) == 0 {
-		log.Fatal("No backends specified")
-	}
+	// if len(backends) == 0 {
+	// 	log.Fatal("No backends specified")
+	// }
 
 	balancer := NewRoundRobinBalancer(backends)
 	httpClient := &fasthttp.Client{
