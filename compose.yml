@@ -1,7 +1,7 @@
 services:
-  go-service:
+  balancer:
     build:
-      context: ./smart-balancer-go
+      context: ./module-balancer
       dockerfile: ./Dockerfile
     ports:
       - "8080:8080"
@@ -10,7 +10,7 @@ services:
       - PORT=8080
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://go-service:8080/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://balancer:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -22,15 +22,31 @@ services:
       context: ./test-client
       dockerfile: ./Dockerfile
     environment:
-      - TARGET_URL=http://go-service:8080/heartbeat
+      - TARGET_URL=http://balancer:8080/heartbeat
       - INTERVAL=1s
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://test-client:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - service-network
     depends_on:
-      - go-service
+      - balancer
     deploy:
       replicas: 10
+
+  redis:
+    image: redis:8.8-m03-trixie
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    networks:
+      - service-network
 
   # prometheus:
   #   image: prom/prometheus:latest
@@ -81,8 +97,8 @@ services:
   #     - go-service
   #     - prometheus
 
-# volumes:
-#   redis-data:
+volumes:
+  redis-data:
 
 networks:
   service-network:

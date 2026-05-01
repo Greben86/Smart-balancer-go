@@ -17,7 +17,7 @@ COPY main.go .
 RUN go build -o smart-balancer .
 
 # Второй этап — финальный образ на основе легковесного Alpine Linux
-FROM alpine:latest as run
+FROM golang:1.24-alpine as run
 
 # Устанавливаем рабочую директорию для финального образа
 WORKDIR /root/

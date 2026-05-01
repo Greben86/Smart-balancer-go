@@ -1,19 +1,21 @@
-FROM golang:1.24-alpine AS builder
+FROM python:3.9-slim
 
+# Устанавливаем необходимые зависимости
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Python зависимости
+RUN pip install flask requests
+
+# Копируем приложение
+COPY app.py /app/app.py
+
+# Рабочая директория
 WORKDIR /app
 
-COPY go.mod ./
+# Экспонируем порт
+EXPOSE 5000
 
-RUN go mod download
-
-COPY main.go .
-
-RUN go build -o client .
-
-FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates
-
-COPY --from=builder /app/client /client
-
-CMD ["/client"]
+# Запускаем приложение
+CMD ["python", "app.py"]
