@@ -14,16 +14,16 @@ RUN go mod download
 COPY main.go .
 
 # Собираем бинарный файл приложения и сохраняем его как "smart-balancer"
-RUN go build -o smart-balancer .
+RUN go build -o module-registry .
 
 # Второй этап — финальный образ на основе легковесного Alpine Linux
-FROM alpine:latest as run
+FROM golang:1.24-alpine as run
 
 # Устанавливаем рабочую директорию для финального образа
 WORKDIR /root/
 
 # Копируем собранный бинарник из этапа builder в финальный образ
-COPY --from=builder /app/smart-balancer /root/smart-balancer
+COPY --from=builder /app/module-registry /root/module-registry
 # Копируем конфигурационный файл приложения в финальный образ
 COPY application.yml ./root/application.yml
 
@@ -31,4 +31,4 @@ COPY application.yml ./root/application.yml
 EXPOSE 8080
 
 # Запускаем приложение с указанием пути к конфигурации и порта
-CMD ["/root/smart-balancer", "--config=application.yml", "--port=:8080"]
+CMD ["/root/module-registry", "--config=application.yml", "--port=:8080"]

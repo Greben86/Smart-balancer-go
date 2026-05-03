@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 )
 
 var (
-	port = flag.String("port", ":8080", "Port to listen on")
+	port   = flag.String("port", ":8888", "Port to listen on")
+	config = flag.String("config", "application.yml", "Configuration file")
 )
 
 // Мапа для хранения IP-адресов сервисов и времени их последнего heartbeat
@@ -22,14 +26,37 @@ var (
 	servicesMutex sync.RWMutex
 )
 
-func initMetrics() {
-	// Запуск сервера метрик Prometheus на порту 9090
-	go func() {
-		log.Println("Metrics server listening on :9090")
-		if err := fasthttp.ListenAndServe(":9090", prometheusHandler); err != nil {
-			log.Fatalf("cannot start metrics server: %v", err)
-		}
-	}()
+// Redis клиент
+var redisClient *redis.Client
+
+func initRedis() {
+	// Получаем адрес Redis из переменной окружения
+	redisAddr := GetEnv("REDIS_ADDR", "localhost:6379")
+	if redisAddr == "" {
+		log.Fatal("REDIS_ADDR environment variable is not set")
+	}
+
+	// Создаем Redis клиент
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	// Проверяем соединение с Redis
+	if _, err := redisClient.Ping(redisClient.Context()).Result(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	log.Printf("Connected to Redis at %s", redisAddr)
+}
+
+// Чтение переменных окружения
+func GetEnv(key, defaultValue string) string {
+	value := os.Getenv(key)
+	if value != "" {
+		return value
+	}
+	return defaultValue
 }
 
 func prometheusHandler(ctx *fasthttp.RequestCtx) {
@@ -72,8 +99,8 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 func main() {
 	flag.Parse()
 
-	// Инициализация метрик
-	initMetrics()
+	// Инициализация Redis
+	initRedis()
 
 	// Настройка обработчика запросов
 	requestHandler := func(ctx *fasthttp.RequestCtx) {
@@ -112,7 +139,18 @@ func heartbeatHandler(ctx *fasthttp.RequestCtx) {
 	// Сохраняем или обновляем запись о сервисе
 	servicesMutex.Lock()
 	services[clientIP] = time.Now()
+
+	// Формируем строку с адресами через запятую
+	var serviceList []string
+	for ip := range services {
+		serviceList = append(serviceList, ip)
+	}
 	servicesMutex.Unlock()
+
+	// Отправляем список сервисов в Redis
+	if err := redisClient.Set(redisClient.Context(), "services.list", strings.Join(serviceList, ","), 0).Err(); err != nil {
+		log.Printf("Failed to update services.list in Redis: %v", err)
+	}
 
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
