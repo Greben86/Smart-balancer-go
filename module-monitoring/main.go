@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 )
 
@@ -23,75 +23,25 @@ var (
 	counterMutex    sync.RWMutex
 )
 
-// Redis клиент
-var redisClient *redis.Client
+// Metrics
+var (
+	requestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "smart_balancer_requests_total",
+			Help: "Total number of requests sent to backends",
+		},
+		[]string{"backend"},
+	)
 
-func initRedis() {
-	// Получаем адрес Redis из переменной окружения
-	redisAddr := GetEnv("REDIS_ADDR", "localhost:6379")
-	if redisAddr == "" {
-		log.Fatal("REDIS_ADDR environment variable is not set")
-	}
-
-	// Создаем Redis клиент
-	redisClient = redis.NewClient(&redis.Options{
-		Addr:     redisAddr,
-		Password: "", // no password set
-		DB:       0,  // use default DB
-	})
-
-	// Проверяем соединение с Redis
-	if _, err := redisClient.Ping(redisClient.Context()).Result(); err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
-	}
-	log.Printf("Connected to Redis at %s", redisAddr)
-}
-
-// Чтение переменных окружения
-func GetEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-// Получение списка бэкендов из Redis
-func getBackendsFromRedis() []string {
-	// Получаем строку с адресами из Redis
-	result, err := redisClient.Get(redisClient.Context(), "services.list").Result()
-	if err != nil {
-		log.Printf("Failed to get services.list from Redis: %v", err)
-		return []string{}
-	}
-
-	// Если строка пустая, возвращаем пустой список
-	if result == "" {
-		return []string{}
-	}
-
-	// Разделяем строку по запятым и формируем список адресов
-	addresses := strings.Split(result, ",")
-	backends := make([]string, 0, len(addresses))
-
-	// Формируем полные URL для каждого адреса
-	for _, addr := range addresses {
-		addr = strings.TrimSpace(addr)
-		if addr != "" {
-			// Добавляем схему и порт, если их нет
-			if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
-				addr = "http://" + addr
-			}
-			// Если порт не указан, используем 8080
-			if !strings.Contains(addr, ":") {
-				addr = addr + ":8080"
-			}
-			backends = append(backends, addr)
-		}
-	}
-
-	return backends
-}
+	requestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "smart_balancer_request_duration_seconds",
+			Help:    "Request duration in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"backend"},
+	)
+)
 
 // RoundRobinBalancer реализует балансировку методом round-robin
 type RoundRobinBalancer struct {
@@ -108,6 +58,27 @@ func NewRoundRobinBalancer(backends []string) *RoundRobinBalancer {
 func (r *RoundRobinBalancer) Next() string {
 	current := atomic.AddUint64(&r.current, 1)
 	return r.backends[(current-1)%uint64(len(r.backends))]
+}
+
+func initMetrics() {
+	// Регистрация метрик Prometheus
+	go func() {
+		log.Println("Metrics server listening on :9090")
+		if err := fasthttp.ListenAndServe(":9090", prometheusHandler); err != nil {
+			log.Fatalf("cannot start metrics server: %v", err)
+		}
+	}()
+}
+
+func prometheusHandler(ctx *fasthttp.RequestCtx) {
+	if string(ctx.Path()) == "/metrics" {
+		// Создаём net/http-совместимый запрос и ответ
+		req := &http.Request{Method: "GET"}
+		rw := newResponseWriter(ctx)
+		promhttp.Handler().ServeHTTP(rw, req)
+	} else {
+		ctx.Error("not found", fasthttp.StatusNotFound)
+	}
 }
 
 // Адаптер для преобразования *fasthttp.RequestCtx в http.ResponseWriter
@@ -139,8 +110,12 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 func main() {
 	flag.Parse()
 
-	// Инициализация Redis
-	initRedis()
+	// Инициализация метрик
+	initMetrics()
+
+	backends := []string{}
+
+	balancer := NewRoundRobinBalancer(backends)
 	httpClient := &fasthttp.Client{
 		MaxIdleConnDuration: 30 * time.Second,
 	}
@@ -150,13 +125,15 @@ func main() {
 		switch string(ctx.Path()) {
 		case "/health":
 			healthHandler(ctx)
+		case "/heartbeat":
+			heartbeatHandler(ctx)
 		default:
-			proxyHandler(ctx, httpClient)
+			proxyHandler(ctx, balancer, httpClient, backends)
 		}
 	}
 
 	// Запуск HTTP-сервера
-	log.Printf("Smart balancer started on %s", *port)
+	log.Printf("Smart balancer started on %s, forwarding to %v", *port, backends)
 	if err := fasthttp.ListenAndServe(*port, requestHandler); err != nil {
 		log.Fatalf("Error starting server: %v", err)
 	}
@@ -168,20 +145,20 @@ func healthHandler(ctx *fasthttp.RequestCtx) {
 	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"healthy\", \"backends\": ...}"))
 }
 
+func heartbeatHandler(ctx *fasthttp.RequestCtx) {
+	clientIP := ctx.RemoteIP().String()
+	log.Printf("Heartbeat received from IP: %s", clientIP)
+	ctx.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"heartbeat received\", \"client_ip\": \"%s\"}", clientIP))
+}
+
 func backendsJSON(backends []string) string {
 	json, _ := json.Marshal(backends)
 	return string(json)
 }
 
-func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
-	// Получаем список бэкендов из Redis
-	backends := getBackendsFromRedis()
-	if len(backends) == 0 {
-		log.Println("No backends found in Redis, waiting for services to register")
-	}
-
-	balancer := NewRoundRobinBalancer(backends)
-
+func proxyHandler(ctx *fasthttp.RequestCtx, balancer *RoundRobinBalancer, client *fasthttp.Client, backends []string) {
 	start := time.Now()
 
 	backendURL := balancer.Next()
@@ -190,8 +167,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
-	req.SetRequestURI(backendURL + ":5000" + string(ctx.Path()))
-	log.Printf("Forwarding request to %s", backendURL+":5000"+string(ctx.Path()))
+	req.SetRequestURI(backendURL + string(ctx.Path()))
 	req.Header.SetMethodBytes(ctx.Method())
 	req.SetBody(ctx.PostBody())
 
@@ -230,6 +206,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	counterMutex.Unlock()
 
 	// Обновление метрик Prometheus
+	requestsTotal.WithLabelValues(backendURL).Inc()
 	duration := time.Since(start).Seconds()
-	log.Printf("Duration of request: %f", duration)
+	requestDuration.WithLabelValues(backendURL).Observe(duration)
 }
