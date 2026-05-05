@@ -35,6 +35,24 @@ services:
     depends_on:
       - redis
 
+  monitoring:
+    build:
+      context: ./module-monitoring
+      dockerfile: ./Dockerfile
+    container_name: monitoring
+    environment:
+      - REDIS_ADDR=redis:6379
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://monitoring:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - service-network
+    depends_on:
+      - redis
+
   test-client:
     build:
       context: ./test-client
@@ -66,28 +84,26 @@ services:
     networks:
       - service-network
 
-  # prometheus:
-  #   image: prom/prometheus:latest
-  #   user: root
-  #   volumes:
-  #     - './prometheus/:/etc/prometheus/'
-  #   container_name: prometheus
-  #   hostname: prometheus
-  #   command:
-  #     - '--config.file=/etc/prometheus/prometheus.yml'
-  #     - '--storage.tsdb.path=/prometheus'
-  #     - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-  #     - '--web.console.templates=/usr/share/prometheus/consoles'
-  #     - '--web.enable-admin-api'
-  #   ports:
-  #     - "9090:9090"
-  #   restart: unless-stopped
-  #   environment:
-  #     TZ: "Europe/Moscow"
-  #   networks:
-  #     - service-network
-  #   depends_on:
-  #     - go-service
+  prometheus:
+    image: prom/prometheus:latest
+    user: root
+    volumes:
+      - './prometheus/:/etc/prometheus/'
+    container_name: prometheus
+    hostname: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-admin-api'
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    environment:
+      TZ: "Europe/Moscow"
+    networks:
+      - service-network
 
   # grafana:
   #   image: grafana/grafana:latest

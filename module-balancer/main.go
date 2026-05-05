@@ -102,6 +102,8 @@ func logRequestDuration(backendURL string, duration time.Duration) {
 		"timestamp": time.Now().Unix(),
 	}
 
+	log.Printf("Writing to Redis stream: %v", values)
+
 	// Добавляем запись в stream
 	if err := redisClient.XAdd(redisClient.Context(), &redis.XAddArgs{
 		Stream: "request.durations", // имя stream

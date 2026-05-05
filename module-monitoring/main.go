@@ -1,15 +1,15 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
-	"sync"
-	"sync/atomic"
+	"os"
 	"time"
 
+	"strconv"
+
+	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -17,22 +17,15 @@ import (
 )
 
 var (
-	port            = flag.String("port", ":8080", "Port to listen on")
-	config          = flag.String("config", "application.yml", "Configuration file")
-	requestCounters = make(map[string]*uint64)
-	counterMutex    sync.RWMutex
+	port   = flag.String("port", ":8080", "Port to listen on")
+	config = flag.String("config", "application.yml", "Configuration file")
 )
+
+// Redis клиент
+var redisClient *redis.Client
 
 // Metrics
 var (
-	requestsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "smart_balancer_requests_total",
-			Help: "Total number of requests sent to backends",
-		},
-		[]string{"backend"},
-	)
-
 	requestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "smart_balancer_request_duration_seconds",
@@ -43,21 +36,25 @@ var (
 	)
 )
 
-// RoundRobinBalancer реализует балансировку методом round-robin
-type RoundRobinBalancer struct {
-	backends []string
-	current  uint64
-}
-
-func NewRoundRobinBalancer(backends []string) *RoundRobinBalancer {
-	return &RoundRobinBalancer{
-		backends: backends,
+func initRedis() {
+	// Получаем адрес Redis из переменной окружения
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		log.Fatal("REDIS_ADDR environment variable is not set")
 	}
-}
 
-func (r *RoundRobinBalancer) Next() string {
-	current := atomic.AddUint64(&r.current, 1)
-	return r.backends[(current-1)%uint64(len(r.backends))]
+	// Создаем Redis клиент
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	// Проверяем соединение с Redis
+	if _, err := redisClient.Ping(redisClient.Context()).Result(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	log.Printf("Connected to Redis at %s", redisAddr)
 }
 
 func initMetrics() {
@@ -110,31 +107,18 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 func main() {
 	flag.Parse()
 
+	// Инициализация Redis
+	initRedis()
+
 	// Инициализация метрик
 	initMetrics()
 
-	backends := []string{}
+	// Запускаем горутину для чтения из Redis stream
+	go readRequestDurations()
 
-	balancer := NewRoundRobinBalancer(backends)
-	httpClient := &fasthttp.Client{
-		MaxIdleConnDuration: 30 * time.Second,
-	}
-
-	// Настройка обработчика запросов
-	requestHandler := func(ctx *fasthttp.RequestCtx) {
-		switch string(ctx.Path()) {
-		case "/health":
-			healthHandler(ctx)
-		case "/heartbeat":
-			heartbeatHandler(ctx)
-		default:
-			proxyHandler(ctx, balancer, httpClient, backends)
-		}
-	}
-
-	// Запуск HTTP-сервера
-	log.Printf("Smart balancer started on %s, forwarding to %v", *port, backends)
-	if err := fasthttp.ListenAndServe(*port, requestHandler); err != nil {
+	// Запускаем health check сервер
+	log.Printf("Monitoring service started on %s", *port)
+	if err := fasthttp.ListenAndServe(*port, healthHandler); err != nil {
 		log.Fatalf("Error starting server: %v", err)
 	}
 }
@@ -142,71 +126,48 @@ func main() {
 func healthHandler(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"healthy\", \"backends\": ...}"))
+	ctx.SetBodyString("{\"status\": \"healthy\"}")
 }
 
-func heartbeatHandler(ctx *fasthttp.RequestCtx) {
-	clientIP := ctx.RemoteIP().String()
-	log.Printf("Heartbeat received from IP: %s", clientIP)
-	ctx.SetContentType("application/json")
-	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"heartbeat received\", \"client_ip\": \"%s\"}", clientIP))
-}
+// Функция для чтения данных из Redis stream и обновления метрик
+func readRequestDurations() {
+	// Используем последнюю доступную запись
+	lastID := "$"
 
-func backendsJSON(backends []string) string {
-	json, _ := json.Marshal(backends)
-	return string(json)
-}
+	for {
+		// Читаем из stream request.durations
+		streamEntries, err := redisClient.XRead(redisClient.Context(), &redis.XReadArgs{
+			Streams: []string{"request.durations", lastID},
+			Count:   10,              // читаем до 10 сообщений за раз
+			Block:   5 * time.Second, // ждем новых сообщений до 5 секунд
+		}).Result()
 
-func proxyHandler(ctx *fasthttp.RequestCtx, balancer *RoundRobinBalancer, client *fasthttp.Client, backends []string) {
-	start := time.Now()
+		if err != nil {
+			// Пропускаем ошибку timeout, так как это ожидаемо при использовании Block
+			if err != redis.Nil && err.Error() != "redis: timed out" {
+				log.Printf("Error reading from Redis stream: %v", err)
+			}
+			continue
+		}
 
-	backendURL := balancer.Next()
+		//log.Printf("Reading from Redis stream: %v", streamEntries)
 
-	// Создание запроса к бэкенду
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
+		// Обрабатываем полученные сообщения
+		for _, stream := range streamEntries {
+			for _, entry := range stream.Messages {
+				// Обновляем lastID для следующего чтения
+				lastID = entry.ID
 
-	req.SetRequestURI(backendURL + string(ctx.Path()))
-	req.Header.SetMethodBytes(ctx.Method())
-	req.SetBody(ctx.PostBody())
-
-	// Копирование заголовков
-	ctx.Request.Header.VisitAll(func(key, value []byte) {
-		req.Header.SetBytesKV(key, value)
-	})
-
-	// Выполнение запроса
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-
-	err := client.Do(req, resp)
-	if err != nil {
-		log.Printf("Error forwarding request to %s: %v", backendURL, err)
-		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-		ctx.SetBodyString("{\"error\": \"Backend service unavailable\"}")
-		return
+				// Извлекаем данные из сообщения
+				if durationStr, _ := entry.Values["duration"].(string); true {
+					if backend, _ := entry.Values["backend"].(string); true {
+						duration, _ := strconv.ParseFloat(durationStr, 64)
+						// Обновляем метрику Prometheus
+						requestDuration.WithLabelValues(backend).Observe(duration)
+						log.Printf("Recorded request duration for %s: %f seconds", backend, duration)
+					}
+				}
+			}
+		}
 	}
-
-	// Копирование заголовков ответа
-	resp.Header.VisitAll(func(key, value []byte) {
-		ctx.Response.Header.SetBytesKV(key, value)
-	})
-
-	// Копирование статуса и тела
-	ctx.SetStatusCode(resp.StatusCode())
-	ctx.SetBody(resp.Body())
-
-	// Обновление счётчиков
-	counterMutex.Lock()
-	counter := requestCounters[backendURL]
-	if counter != nil {
-		atomic.AddUint64(counter, 1)
-	}
-	counterMutex.Unlock()
-
-	// Обновление метрик Prometheus
-	requestsTotal.WithLabelValues(backendURL).Inc()
-	duration := time.Since(start).Seconds()
-	requestDuration.WithLabelValues(backendURL).Observe(duration)
 }
