@@ -93,6 +93,24 @@ func getBackendsFromRedis() []string {
 	return backends
 }
 
+// Запись метрики времени выполнения в Redis stream
+func logRequestDuration(backendURL string, duration time.Duration) {
+	// Создаем map с данными для записи в stream
+	values := map[string]interface{}{
+		"backend":   backendURL,
+		"duration":  duration.Microseconds(), // сохраняем в микросекундах
+		"timestamp": time.Now().Unix(),
+	}
+
+	// Добавляем запись в stream
+	if err := redisClient.XAdd(redisClient.Context(), &redis.XAddArgs{
+		Stream: "request.durations", // имя stream
+		Values: values,
+	}).Err(); err != nil {
+		log.Printf("Failed to write request duration to Redis stream: %v", err)
+	}
+}
+
 // RoundRobinBalancer реализует балансировку методом round-robin
 type RoundRobinBalancer struct {
 	backends []string
@@ -182,16 +200,16 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 
 	balancer := NewRoundRobinBalancer(backends)
 
-	start := time.Now()
+	backendURL := balancer.Next() + ":5000"
 
-	backendURL := balancer.Next()
-
+	// Начало точного измерения времени
+	startTime := time.Now()
 	// Создание запроса к бэкенду
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
-	req.SetRequestURI(backendURL + ":5000" + string(ctx.Path()))
-	log.Printf("Forwarding request to %s", backendURL+":5000"+string(ctx.Path()))
+	req.SetRequestURI(backendURL + string(ctx.Path()))
+	req.SetTimeout(time.Duration(time.Duration.Seconds(5)))
 	req.Header.SetMethodBytes(ctx.Method())
 	req.SetBody(ctx.PostBody())
 
@@ -229,7 +247,12 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	}
 	counterMutex.Unlock()
 
-	// Обновление метрик Prometheus
-	duration := time.Since(start).Seconds()
-	log.Printf("Duration of request: %f", duration)
+	// Точное измерение времени выполнения
+	duration := time.Since(startTime)
+
+	// Запись времени выполнения в Redis stream
+	logRequestDuration(backendURL, duration)
+
+	// Логирование результата
+	log.Printf("Request to %s completed in %v", backendURL, duration)
 }
