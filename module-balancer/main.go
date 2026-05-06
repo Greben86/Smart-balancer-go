@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -185,7 +184,7 @@ func main() {
 func healthHandler(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetBodyString(fmt.Sprintf("{\"status\": \"healthy\", \"backends\": ...}"))
+	ctx.SetBodyString("{\"status\": \"healthy\", \"backends\": ...}")
 }
 
 func backendsJSON(backends []string) string {
