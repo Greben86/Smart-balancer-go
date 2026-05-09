@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,10 +94,11 @@ func getBackendsFromRedis() []string {
 }
 
 // Запись метрики времени выполнения в Redis stream
-func logRequestDuration(backendURL string, duration time.Duration) {
+func logRequestDuration(backend string, path string, duration time.Duration) {
 	// Создаем map с данными для записи в stream
 	values := map[string]interface{}{
-		"backend":   backendURL,
+		"backend":   backend,
+		"path":      path,
 		"duration":  duration.Microseconds(), // сохраняем в микросекундах
 		"timestamp": time.Now().Unix(),
 	}
@@ -125,8 +127,52 @@ func NewRoundRobinBalancer(backends []string) *RoundRobinBalancer {
 }
 
 func (r *RoundRobinBalancer) Next() string {
-	current := atomic.AddUint64(&r.current, 1)
-	return r.backends[(current-1)%uint64(len(r.backends))]
+	if len(r.backends) == 0 {
+		return ""
+	}
+	
+	var bestBackend string
+	maxRatio := float64(0)
+	
+	for _, backend := range r.backends {
+		// Получаем значение hurst из Redis
+		hurstKey := "service.hurst." + backend
+		hurstStr, err := redisClient.Get(redisClient.Context(), hurstKey).Result()
+		if err != nil {
+			// Если ключ не найден или ошибка, пропускаем этот бэкенд
+			log.Printf("Failed to get %s from Redis: %v", hurstKey, err)
+			continue
+		}
+		
+		// Преобразуем значение в float64
+		hurst, err := strconv.ParseFloat(hurstStr, 64)
+		if err != nil {
+			log.Printf("Failed to parse hurst value %s for %s: %v", hurstStr, backend, err)
+			continue
+		}
+		
+		// Избегаем деления на ноль
+		if hurst == 0 {
+			continue
+		}
+		
+		// Считаем отношение 100/hurst
+		ratio := 100.0 / hurst
+		
+		// Выбираем бэкенд с максимальным отношением
+		if ratio > maxRatio {
+			maxRatio = ratio
+			bestBackend = backend
+		}
+	}
+	
+	// Если не удалось выбрать бэкенд по hurst, используем round-robin
+	if bestBackend == "" {
+		current := atomic.AddUint64(&r.current, 1)
+		return r.backends[(current-1)%uint64(len(r.backends))]
+	}
+	
+	return bestBackend
 }
 
 // Адаптер для преобразования *fasthttp.RequestCtx в http.ResponseWriter
@@ -201,7 +247,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 
 	balancer := NewRoundRobinBalancer(backends)
 
-	backendURL := balancer.Next() + ":5000"
+	backend := balancer.Next() + ":5000"
 
 	// Начало точного измерения времени
 	startTime := time.Now()
@@ -209,7 +255,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
-	req.SetRequestURI(backendURL + string(ctx.Path()))
+	req.SetRequestURI(backend + string(ctx.Path()))
 	req.SetTimeout(time.Duration(time.Duration.Seconds(5)))
 	req.Header.SetMethodBytes(ctx.Method())
 	req.SetBody(ctx.PostBody())
@@ -225,7 +271,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 
 	err := client.Do(req, resp)
 	if err != nil {
-		log.Printf("Error forwarding request to %s: %v", backendURL, err)
+		log.Printf("Error forwarding request to %s: %v", backend, err)
 		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
 		ctx.SetBodyString("{\"error\": \"Backend service unavailable\"}")
 		return
@@ -242,7 +288,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 
 	// Обновление счётчиков
 	counterMutex.Lock()
-	counter := requestCounters[backendURL]
+	counter := requestCounters[backend]
 	if counter != nil {
 		atomic.AddUint64(counter, 1)
 	}
@@ -252,8 +298,8 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	duration := time.Since(startTime)
 
 	// Запись времени выполнения в Redis stream
-	logRequestDuration(backendURL, duration)
+	logRequestDuration(backend, string(ctx.Path()), duration)
 
 	// Логирование результата
-	log.Printf("Request to %s completed in %v", backendURL, duration)
+	log.Printf("Request to %s:5000%s completed in %v", backend, string(ctx.Path()), duration)
 }

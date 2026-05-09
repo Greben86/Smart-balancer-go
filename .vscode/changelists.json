@@ -1,0 +1,21 @@
+{
+  "changelists": [
+    {
+      "name": "Default",
+      "files": [
+        "compose.yml",
+        "grafana/dashboards/dashboard-anomalies.json",
+        "grafana/dashboards/dashboard-rps.json",
+        "grafana/dashboards/dashboard-simple.json",
+        "grafana/dashboards/dashboard.json",
+        "module-balancer/main.go",
+        "module-monitoring/main.go",
+        "grafana/config/grafana.ini",
+        "grafana/datasources/datasource.yaml",
+        ".vscode/changelists.json",
+        "grafana/dashboards/provisioning.yaml"
+      ]
+    }
+  ],
+  "active": "Default"
+}

@@ -110,11 +110,10 @@ services:
     user: root
     ports:
       - "3000:3000"
-    # volumes:
-    #   - "./grafana/dashboards/dashboard-anomalies.json:/etc/grafana/provisioning/dashboards/dashboard-anomalies.json"
-    #   - "./grafana/dashboards/dashboard-rps.json:/etc/grafana/provisioning/dashboards/dashboard-rps.json"
-    #   - "./grafana/dashboards/dashboard-simple.json:/etc/grafana/provisioning/dashboards/dashboard-simple.json"
-    #   - "./grafana/dashboards/dashboard.json:/etc/grafana/provisioning/dashboards/dashboard.json"
+    volumes:
+      - "./grafana/config/grafana.ini:/etc/grafana/grafana.ini:ro"
+      - "./grafana/datasources:/etc/grafana/provisioning/datasources:ro"
+      - "./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
@@ -127,6 +126,8 @@ services:
     restart: unless-stopped
     networks:
       - service-network
+    depends_on:
+      - prometheus
 
 volumes:
   redis-data:

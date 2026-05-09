@@ -32,6 +32,14 @@ var (
 			Help:    "Request duration in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
+		[]string{"backend", "path"},
+	)
+	serviceHurst = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "smart_balancer_service_hurst_value",
+			Help:    "Request duration in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
 		[]string{"backend"},
 	)
 )
@@ -150,8 +158,6 @@ func readRequestDurations() {
 			continue
 		}
 
-		//log.Printf("Reading from Redis stream: %v", streamEntries)
-
 		// Обрабатываем полученные сообщения
 		for _, stream := range streamEntries {
 			for _, entry := range stream.Messages {
@@ -159,13 +165,18 @@ func readRequestDurations() {
 				lastID = entry.ID
 
 				// Извлекаем данные из сообщения
-				if durationStr, _ := entry.Values["duration"].(string); true {
-					if backend, _ := entry.Values["backend"].(string); true {
-						duration, _ := strconv.ParseFloat(durationStr, 64)
-						// Обновляем метрику Prometheus
-						requestDuration.WithLabelValues(backend).Observe(duration)
-						log.Printf("Recorded request duration for %s: %f seconds", backend, duration)
-					}
+				durationStr := entry.Values["duration"].(string)
+				backend := entry.Values["backend"].(string)
+				path := entry.Values["path"].(string)
+				duration, _ := strconv.ParseFloat(durationStr, 64)
+				// Обновляем метрику Prometheus
+				requestDuration.With(prometheus.Labels{"backend": backend, "path": path}).Observe(duration)
+				serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(2.5)
+				log.Printf("Recorded request duration for %s: %f seconds", backend, duration)
+
+				// Отправляем параметр Херста в Redis
+				if err := redisClient.Set(redisClient.Context(), "service.hurst."+backend, 2.5, 0).Err(); err != nil {
+					log.Printf("Failed to update service.hurst.%s in Redis: %v", backend, err)
 				}
 			}
 		}
