@@ -79,13 +79,13 @@ func getBackendsFromRedis() []string {
 		addr = strings.TrimSpace(addr)
 		if addr != "" {
 			// Добавляем схему и порт, если их нет
-			if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
-				addr = "http://" + addr
-			}
+			// if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
+			// 	addr = "http://" + addr
+			// }
 			// Если порт не указан, используем 8080
-			if !strings.Contains(addr, ":") {
-				addr = addr + ":8080"
-			}
+			// if !strings.Contains(addr, ":") {
+			// 	addr = addr + ":8080"
+			// }
 			backends = append(backends, addr)
 		}
 	}
@@ -130,10 +130,11 @@ func (r *RoundRobinBalancer) Next() string {
 	if len(r.backends) == 0 {
 		return ""
 	}
-	
+
 	var bestBackend string
 	maxRatio := float64(0)
-	
+
+	hurstValues := make(map[string]string)
 	for _, backend := range r.backends {
 		// Получаем значение hurst из Redis
 		hurstKey := "service.hurst." + backend
@@ -143,35 +144,43 @@ func (r *RoundRobinBalancer) Next() string {
 			log.Printf("Failed to get %s from Redis: %v", hurstKey, err)
 			continue
 		}
-		
-		// Преобразуем значение в float64
-		hurst, err := strconv.ParseFloat(hurstStr, 64)
-		if err != nil {
-			log.Printf("Failed to parse hurst value %s for %s: %v", hurstStr, backend, err)
-			continue
-		}
-		
-		// Избегаем деления на ноль
-		if hurst == 0 {
-			continue
-		}
-		
-		// Считаем отношение 100/hurst
-		ratio := 100.0 / hurst
-		
-		// Выбираем бэкенд с максимальным отношением
-		if ratio > maxRatio {
-			maxRatio = ratio
-			bestBackend = backend
-		}
+		hurstValues[backend] = hurstStr
 	}
-	
+
+	if len(r.backends) == len(hurstValues) {
+		for _, backend := range r.backends {
+			// Преобразуем значение в float64
+			hurstStr := hurstValues[backend]
+			hurst, err := strconv.ParseFloat(hurstStr, 64)
+			if err != nil {
+				log.Printf("Failed to parse hurst value %s for %s: %v", hurstStr, backend, err)
+				continue
+			}
+
+			// Избегаем деления на ноль
+			if hurst == 0 {
+				continue
+			}
+
+			// Считаем отношение 100/hurst
+			ratio := 100.0 / hurst
+
+			// Выбираем бэкенд с максимальным отношением
+			if ratio > maxRatio {
+				maxRatio = ratio
+				bestBackend = backend
+			}
+		}
+		log.Printf("The best backend -> %s", bestBackend)
+	}
+
 	// Если не удалось выбрать бэкенд по hurst, используем round-robin
 	if bestBackend == "" {
-		current := atomic.AddUint64(&r.current, 1)
+		current := uint64(time.Now().UnixNano())
+		// current := atomic.AddUint64(&r.current, 1)
 		return r.backends[(current-1)%uint64(len(r.backends))]
 	}
-	
+
 	return bestBackend
 }
 
@@ -247,7 +256,8 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 
 	balancer := NewRoundRobinBalancer(backends)
 
-	backend := balancer.Next() + ":5000"
+	backend := balancer.Next()
+	fullPath := "http://" + backend + ":5000" + string(ctx.Path())
 
 	// Начало точного измерения времени
 	startTime := time.Now()
@@ -255,7 +265,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
-	req.SetRequestURI(backend + string(ctx.Path()))
+	req.SetRequestURI(fullPath)
 	req.SetTimeout(time.Duration(time.Duration.Seconds(5)))
 	req.Header.SetMethodBytes(ctx.Method())
 	req.SetBody(ctx.PostBody())
@@ -271,7 +281,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 
 	err := client.Do(req, resp)
 	if err != nil {
-		log.Printf("Error forwarding request to %s: %v", backend, err)
+		log.Printf("Error forwarding request to %s ==>> %v", fullPath, err)
 		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
 		ctx.SetBodyString("{\"error\": \"Backend service unavailable\"}")
 		return
