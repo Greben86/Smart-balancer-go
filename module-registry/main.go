@@ -148,7 +148,7 @@ func heartbeatHandler(ctx *fasthttp.RequestCtx) {
 	servicesMutex.Unlock()
 
 	// Отправляем список сервисов в Redis
-	if err := redisClient.Set(redisClient.Context(), "services.list", strings.Join(serviceList, ","), 0).Err(); err != nil {
+	if err := redisClient.Set(redisClient.Context(), "target.services", strings.Join(serviceList, ","), 0).Err(); err != nil {
 		log.Printf("Failed to update services.list in Redis: %v", err)
 	}
 

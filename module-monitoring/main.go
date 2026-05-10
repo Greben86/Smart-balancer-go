@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"time"
@@ -26,6 +27,13 @@ var redisClient *redis.Client
 
 // Metrics
 var (
+	requestsCounter = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "smart_balancer_requests_total",
+			Help: "Количество запросов к микросервисам",
+		},
+		[]string{"backend", "path"},
+	)
 	requestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "smart_balancer_request_duration_seconds",
@@ -145,7 +153,7 @@ func readRequestDurations() {
 	for {
 		// Читаем из stream request.durations
 		streamEntries, err := redisClient.XRead(redisClient.Context(), &redis.XReadArgs{
-			Streams: []string{"request.durations", lastID},
+			Streams: []string{"monitoring.events", lastID},
 			Count:   10,              // читаем до 10 сообщений за раз
 			Block:   5 * time.Second, // ждем новых сообщений до 5 секунд
 		}).Result()
@@ -170,6 +178,7 @@ func readRequestDurations() {
 				path := entry.Values["path"].(string)
 				duration, _ := strconv.ParseFloat(durationStr, 64)
 				// Обновляем метрику Prometheus
+				requestsCounter.With(prometheus.Labels{"backend": backend, "path": path}).Inc()
 				requestDuration.With(prometheus.Labels{"backend": backend, "path": path}).Observe(duration)
 				serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(2.5)
 				log.Printf("Recorded request duration for %s: %f seconds", backend, duration)
@@ -181,4 +190,51 @@ func readRequestDurations() {
 			}
 		}
 	}
+}
+
+// Hurst рассчитывает упрощенный параметр Херста через R/S
+func Hurst(data []float64) float64 {
+	n := len(data)
+	if n < 2 {
+		return 0
+	}
+
+	// 1. Находим среднее
+	var sum float64
+	for _, v := range data {
+		sum += v
+	}
+	mean := sum / float64(n)
+
+	// 2. Рассчитываем отклонения и их накопленную сумму
+	z := make([]float64, n)
+	var cumulativeSum float64
+	var maxZ, minZ float64
+
+	for i, v := range data {
+		cumulativeSum += v - mean
+		z[i] = cumulativeSum
+		if cumulativeSum > maxZ {
+			maxZ = cumulativeSum
+		}
+		if cumulativeSum < minZ {
+			minZ = cumulativeSum
+		}
+	}
+
+	// 3. Размах (Range)
+	R := maxZ - minZ
+
+	// 4. Стандартное отклонение (S)
+	var sqSum float64
+	for _, v := range data {
+		sqSum += math.Pow(v-mean, 2)
+	}
+	S := math.Sqrt(sqSum / float64(n))
+
+	// 5. Итоговое значение H = log(R/S) / log(n)
+	if S == 0 {
+		return 0
+	}
+	return math.Log(R/S) / math.Log(float64(n))
 }

@@ -59,7 +59,7 @@ func GetEnv(key, defaultValue string) string {
 // Получение списка бэкендов из Redis
 func getBackendsFromRedis() []string {
 	// Получаем строку с адресами из Redis
-	result, err := redisClient.Get(redisClient.Context(), "services.list").Result()
+	result, err := redisClient.Get(redisClient.Context(), "target.services").Result()
 	if err != nil {
 		log.Printf("Failed to get services.list from Redis: %v", err)
 		return []string{}
@@ -78,14 +78,6 @@ func getBackendsFromRedis() []string {
 	for _, addr := range addresses {
 		addr = strings.TrimSpace(addr)
 		if addr != "" {
-			// Добавляем схему и порт, если их нет
-			// if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
-			// 	addr = "http://" + addr
-			// }
-			// Если порт не указан, используем 8080
-			// if !strings.Contains(addr, ":") {
-			// 	addr = addr + ":8080"
-			// }
 			backends = append(backends, addr)
 		}
 	}
@@ -96,7 +88,7 @@ func getBackendsFromRedis() []string {
 // Запись метрики времени выполнения в Redis stream
 func logRequestDuration(backend string, path string, duration time.Duration) {
 	// Создаем map с данными для записи в stream
-	values := map[string]interface{}{
+	values := map[string]any{
 		"backend":   backend,
 		"path":      path,
 		"duration":  duration.Microseconds(), // сохраняем в микросекундах
@@ -107,26 +99,26 @@ func logRequestDuration(backend string, path string, duration time.Duration) {
 
 	// Добавляем запись в stream
 	if err := redisClient.XAdd(redisClient.Context(), &redis.XAddArgs{
-		Stream: "request.durations", // имя stream
+		Stream: "monitoring.events", // имя stream
 		Values: values,
 	}).Err(); err != nil {
 		log.Printf("Failed to write request duration to Redis stream: %v", err)
 	}
 }
 
-// RoundRobinBalancer реализует балансировку методом round-robin
-type RoundRobinBalancer struct {
+// SmartBalancer реализует балансировку
+type SmartBalancer struct {
 	backends []string
 	current  uint64
 }
 
-func NewRoundRobinBalancer(backends []string) *RoundRobinBalancer {
-	return &RoundRobinBalancer{
+func NewSmartBalancer(backends []string) *SmartBalancer {
+	return &SmartBalancer{
 		backends: backends,
 	}
 }
 
-func (r *RoundRobinBalancer) Next() string {
+func (r *SmartBalancer) Next() string {
 	if len(r.backends) == 0 {
 		return ""
 	}
@@ -254,7 +246,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 		log.Println("No backends found in Redis, waiting for services to register")
 	}
 
-	balancer := NewRoundRobinBalancer(backends)
+	balancer := NewSmartBalancer(backends)
 
 	backend := balancer.Next()
 	fullPath := "http://" + backend + ":5000" + string(ctx.Path())

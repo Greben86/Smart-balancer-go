@@ -3,8 +3,11 @@
     {
       "name": "Default",
       "files": [
+        "module-monitoring/main.go",
+        ".vscode/changelists.json",
         "module-balancer/main.go",
-        ".vscode/changelists.json"
+        "module-registry/main.go",
+        "grafana/dashboards/dashboard.json"
       ]
     }
   ],
