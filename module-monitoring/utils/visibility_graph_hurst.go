@@ -3,22 +3,22 @@ package utils
 import (
 	"fmt"
 	"math"
+
+	"gonum.org/v1/gonum/stat"
 )
 
-// VisibilityGraph строит степени узлов для временного ряда
-func calculateDegrees(data []float64) []int {
+// 1. Построение графа и расчет степеней узлов
+func getDegrees(data []float64) []float64 {
 	n := len(data)
-	degrees := make([]int, n)
+	degrees := make([]float64, n)
 
 	for i := 0; i < n; i++ {
 		for j := i + 1; j < n; j++ {
 			visible := true
-			// Проверяем условие видимости для всех промежуточных точек k
+			// Условие видимости
 			for k := i + 1; k < j; k++ {
-				valK := data[k]
-				// Формула прямой линии между i и j
 				threshold := data[j] + (data[i]-data[j])*(float64(j-k)/float64(j-i))
-				if valK >= threshold {
+				if data[k] >= threshold {
 					visible = false
 					break
 				}
@@ -32,47 +32,46 @@ func calculateDegrees(data []float64) []int {
 	return degrees
 }
 
-// Простая оценка экспоненты распределения gamma через МНК (логарифмические координаты)
-func estimateHurst(degrees []int) float64 {
-	// 1. Считаем частоты степеней P(k)
-	counts := make(map[int]int)
+// 2. Оценка показателя Хёрста
+func calculateHurstVG(degrees []float64, length int) float64 {
+
+	// Подсчет частот P(k)
+	counts := make(map[float64]float64)
 	for _, k := range degrees {
 		counts[k]++
 	}
 
 	var logK, logP []float64
+	n := float64(length)
+
 	for k, count := range counts {
 		if k > 0 {
-			logK = append(logK, math.Log(float64(k)))
-			logP = append(logP, math.Log(float64(count)/float64(len(degrees))))
+			logK = append(logK, math.Log(k))
+			logP = append(logP, math.Log(count/n))
 		}
 	}
 
-	// 2. Линейная регрессия для поиска наклона -gamma
-	// В продакшене лучше использовать gonum/stat для регрессии
-	gamma := simpleLinearSlope(logK, logP)
+	// 3. Линейная регрессия через Gonum
+	// LinearRegression возвращает (alpha, beta) для y = alpha + beta*x
+	_, gammaRaw := stat.LinearRegression(logK, logP, nil, false)
 
-	// 3. H = (3 - gamma) / 2. Т.к. наклон отрицательный, берем по модулю.
-	return (3.0 - math.Abs(gamma)) / 2.0
-}
+	gamma := math.Abs(gammaRaw)
 
-func simpleLinearSlope(x, y []float64) float64 {
-	var sumX, sumY, sumXY, sumXX float64
-	n := float64(len(x))
-	for i := 0; i < len(x); i++ {
-		sumX += x[i]
-		sumY += y[i]
-		sumXY += x[i] * y[i]
-		sumXX += x[i] * x[i]
-	}
-	return (n*sumXY - sumX*sumY) / (n*sumXX - sumX*sumX)
+	// Формула H = (3 - gamma) / 2
+	h := (3.0 - gamma) / 2.0
+	return h
 }
 
 func VGHurst(series []float64) (float64, error) {
-	degrees := calculateDegrees(series)
-	h := estimateHurst(degrees)
+	length := len(series)
+	if length < 100 {
+		return .5, nil
+	}
 
-	fmt.Printf("Оценка показателя Хёрста (VG): %.4f\n", h)
+	degrees := getDegrees(series)
+	hurst := calculateHurstVG(degrees, length)
 
-	return h, nil
+	fmt.Printf("Оценка показателя Хёрста (VG): %.4f\n", hurst)
+
+	return hurst, nil
 }

@@ -25,5 +25,6 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/sys v0.39.0 // indirect
+	gonum.org/v1/gonum v0.17.0
 	google.golang.org/protobuf v1.36.9 // indirect
 )

@@ -5,13 +5,13 @@ FROM golang:1.24-alpine AS builder
 WORKDIR /app
 
 # Копируем файлы зависимостей Go (go.mod и go.sum) в рабочую директорию
-COPY go.mod go.sum ./
+COPY . ./
 
 # Скачиваем все зависимости, указанные в go.mod
 RUN go mod download
 
 # Копируем исходный код приложения в рабочую директорию
-COPY main.go .
+# COPY main.go .
 
 # Собираем бинарный файл приложения и сохраняем его как "smart-balancer"
 RUN go build -o smart-balancer .

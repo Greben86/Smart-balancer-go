@@ -62,7 +62,7 @@ var (
 
 func initRedis() {
 	// Получаем адрес Redis из переменной окружения
-	redisAddr := utils.GetEnv("REDIS_ADDR", "")
+	redisAddr := utils.GetEnv("REDIS_ADDR", "localhost:6379")
 	if redisAddr == "" {
 		log.Fatal("REDIS_ADDR environment variable is not set")
 	}
@@ -143,17 +143,16 @@ func main() {
 		// defer ticker.Stop()
 		for {
 			<-ticker.C
-			valuesMutex.RLock()
 			for backend, valueList := range backendValues {
 				// Преобразуем list.List в []float64 при необходимости
-				// valuesMutex.RLock()
+				valuesMutex.RLock()
 				values := make([]float64, 0, valueList.Len())
 				for e := backendValues[backend].Front(); e != nil; e = e.Next() {
 					if val, ok := e.Value.(float64); ok {
 						values = append(values, val)
 					}
 				}
-				// valuesMutex.RUnlock()
+				valuesMutex.RUnlock()
 
 				// Подсчитываем Херст для текущего списка значений
 				hurst, _ := utils.VGHurst(values)
@@ -165,7 +164,6 @@ func main() {
 					log.Printf("Failed to update service.hurst.%s in Redis: %v", backend, err)
 				}
 			}
-			valuesMutex.RUnlock()
 		}
 	}()
 
@@ -220,20 +218,21 @@ func readRequestDurations() {
 				// Обновляем метрику Prometheus
 				requestsCounter.With(prometheus.Labels{"backend": backend, "path": path}).Inc()
 				requestDuration.With(prometheus.Labels{"backend": backend, "path": path}).Observe(duration)
-				// log.Printf("Recorded request duration for %s: %f seconds", backend, duration)
 
 				// Сохраняем значение в памяти для этого backend
-				valuesMutex.Lock()
-				if _, exists := backendValues[backend]; !exists {
-					backendValues[backend] = list.New()
-				}
-				// Добавляем новое значение
-				backendValues[backend].PushBack(duration)
-				// Проверяем размер и удаляем старые значения при необходимости (FIFO)
-				for backendValues[backend].Len() > maxValues {
-					backendValues[backend].Remove(backendValues[backend].Front())
-				}
-				valuesMutex.Unlock()
+				go func() {
+					valuesMutex.Lock()
+					if _, exists := backendValues[backend]; !exists {
+						backendValues[backend] = list.New()
+					}
+					// Добавляем новое значение
+					backendValues[backend].PushBack(duration)
+					// Проверяем размер и удаляем старые значения при необходимости (FIFO)
+					for backendValues[backend].Len() > maxValues {
+						backendValues[backend].Remove(backendValues[backend].Front())
+					}
+					valuesMutex.Unlock()
+				}()
 			}
 		}
 	}
