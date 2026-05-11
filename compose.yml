@@ -71,7 +71,7 @@ services:
     depends_on:
       - registry
     deploy:
-      replicas: 10
+      replicas: 20
 
   redis:
     image: redis:8.8-m03-trixie

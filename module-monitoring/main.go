@@ -4,9 +4,8 @@ import (
 	"container/list"
 	"flag"
 	"log"
-	"math"
 	"net/http"
-	"os"
+	"smart-balancer-go/utils"
 	"sync"
 	"time"
 
@@ -63,7 +62,7 @@ var (
 
 func initRedis() {
 	// Получаем адрес Redis из переменной окружения
-	redisAddr := os.Getenv("REDIS_ADDR")
+	redisAddr := utils.GetEnv("REDIS_ADDR", "")
 	if redisAddr == "" {
 		log.Fatal("REDIS_ADDR environment variable is not set")
 	}
@@ -156,7 +155,8 @@ func main() {
 				}
 				// valuesMutex.RUnlock()
 
-				hurst := Hurst(values)
+				// Подсчитываем Херст для текущего списка значений
+				hurst, _ := utils.VGHurst(values)
 				serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
 				log.Printf("Backend %s has %d stored values", backend, valueList.Len())
 
@@ -237,51 +237,4 @@ func readRequestDurations() {
 			}
 		}
 	}
-}
-
-// Hurst рассчитывает упрощенный параметр Херста через R/S
-func Hurst(data []float64) float64 {
-	n := len(data)
-	if n < 2 {
-		return 0.5
-	}
-
-	// 1. Находим среднее
-	var sum float64
-	for _, v := range data {
-		sum += v
-	}
-	mean := sum / float64(n)
-
-	// 2. Рассчитываем отклонения и их накопленную сумму
-	z := make([]float64, n)
-	var cumulativeSum float64
-	var maxZ, minZ float64
-
-	for i, v := range data {
-		cumulativeSum += v - mean
-		z[i] = cumulativeSum
-		if cumulativeSum > maxZ {
-			maxZ = cumulativeSum
-		}
-		if cumulativeSum < minZ {
-			minZ = cumulativeSum
-		}
-	}
-
-	// 3. Размах (Range)
-	R := maxZ - minZ
-
-	// 4. Стандартное отклонение (S)
-	var sqSum float64
-	for _, v := range data {
-		sqSum += math.Pow(v-mean, 2)
-	}
-	S := math.Sqrt(sqSum / float64(n))
-
-	// 5. Итоговое значение H = log(R/S) / log(n)
-	if S == 0 {
-		return 0.5
-	}
-	return math.Log(R/S) / math.Log(float64(n))
 }
