@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"smart-balancer-go/utils"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,10 +31,17 @@ var redisClient *redis.Client
 var (
 	requestsCounter = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "smart_balancer_requests_total",
+			Name: "smart_balancer_requests_count",
 			Help: "Количество запросов к микросервисам",
 		},
 		[]string{"backend", "path"},
+	)
+	statusCounter = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "smart_balancer_status_code_count",
+			Help: "Количество запросов к микросервисам",
+		},
+		[]string{"status_code", "backend", "path"},
 	)
 	requestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -143,26 +151,45 @@ func main() {
 		// defer ticker.Stop()
 		for {
 			<-ticker.C
-			for backend, valueList := range backendValues {
-				// Преобразуем list.List в []float64 при необходимости
-				valuesMutex.RLock()
-				values := make([]float64, 0, valueList.Len())
-				for e := backendValues[backend].Front(); e != nil; e = e.Next() {
-					if val, ok := e.Value.(float64); ok {
-						values = append(values, val)
+			log.Println("Start calculate hurst")
+			// Получаем строку с адресами из Redis
+			serviceStr, err := redisClient.Get(redisClient.Context(), "target.services").Result()
+			if err != nil {
+				log.Printf("Failed to get target.services from Redis: %v", err)
+			}
+			if serviceStr != "" {
+				log.Printf("Target services: %s", serviceStr)
+				// Разделяем строку по запятым и формируем список адресов
+				backends := strings.Split(serviceStr, ",")
+				for _, backend := range backends {
+					log.Printf("Backend: %s", backend)
+					// Преобразуем list.List в []float64 при необходимости
+					var values []float64
+					if backendValues[backend] != nil {
+						valuesMutex.RLock()
+						values = make([]float64, 0, backendValues[backend].Len())
+						for e := backendValues[backend].Front(); e != nil; e = e.Next() {
+							if val, ok := e.Value.(float64); ok {
+								values = append(values, val)
+							}
+						}
+						valuesMutex.RUnlock()
+					}
+
+					// Подсчитываем Херст для текущего списка значений
+					hurst, _ := utils.VGHurst(values)
+					serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
+					// log.Printf("Backend %s has %d stored values", backend, valueList.Len())
+
+					// Отправляем параметр Херста в Redis
+					if err := redisClient.Set(redisClient.Context(), "service.hurst."+backend, hurst, 0).Err(); err != nil {
+						log.Printf("Failed to update service.hurst.%s in Redis: %v", backend, err)
+					} else {
+						log.Printf("Updated service.hurst.%s in Redis with value %f", backend, hurst)
 					}
 				}
-				valuesMutex.RUnlock()
-
-				// Подсчитываем Херст для текущего списка значений
-				hurst, _ := utils.VGHurst(values)
-				serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
-				log.Printf("Backend %s has %d stored values", backend, valueList.Len())
-
-				// Отправляем параметр Херста в Redis
-				if err := redisClient.Set(redisClient.Context(), "service.hurst."+backend, 0.5, 0).Err(); err != nil {
-					log.Printf("Failed to update service.hurst.%s in Redis: %v", backend, err)
-				}
+			} else {
+				log.Printf("No backends found in Redis")
 			}
 		}
 	}()
@@ -212,11 +239,13 @@ func readRequestDurations() {
 
 				// Извлекаем данные из сообщения
 				durationStr := entry.Values["duration"].(string)
+				duration, _ := strconv.ParseFloat(durationStr, 64)
 				backend := entry.Values["backend"].(string)
 				path := entry.Values["path"].(string)
-				duration, _ := strconv.ParseFloat(durationStr, 64)
+				statusStr := entry.Values["status_code"].(string)
 				// Обновляем метрику Prometheus
 				requestsCounter.With(prometheus.Labels{"backend": backend, "path": path}).Inc()
+				statusCounter.With(prometheus.Labels{"status_code": statusStr, "backend": backend, "path": path}).Inc()
 				requestDuration.With(prometheus.Labels{"backend": backend, "path": path}).Observe(duration)
 
 				// Сохраняем значение в памяти для этого backend
