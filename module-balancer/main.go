@@ -1,8 +1,10 @@
 package main
 
 import (
+	"container/list"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -56,35 +58,6 @@ func GetEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// Получение списка бэкендов из Redis
-func getBackendsFromRedis() []string {
-	// Получаем строку с адресами из Redis
-	result, err := redisClient.Get(redisClient.Context(), "target.services").Result()
-	if err != nil {
-		log.Printf("Failed to get services.list from Redis: %v", err)
-		return []string{}
-	}
-
-	// Если строка пустая, возвращаем пустой список
-	if result == "" {
-		return []string{}
-	}
-
-	// Разделяем строку по запятым и формируем список адресов
-	addresses := strings.Split(result, ",")
-	backends := make([]string, 0, len(addresses))
-
-	// Формируем полные URL для каждого адреса
-	for _, addr := range addresses {
-		addr = strings.TrimSpace(addr)
-		if addr != "" {
-			backends = append(backends, addr)
-		}
-	}
-
-	return backends
-}
-
 // Запись метрики времени выполнения в Redis stream
 func logRequestDuration(backend string, path string, duration time.Duration) {
 	// Создаем map с данными для записи в stream
@@ -95,7 +68,7 @@ func logRequestDuration(backend string, path string, duration time.Duration) {
 		"timestamp": time.Now().Unix(),
 	}
 
-	log.Printf("Writing to Redis stream: %v", values)
+	// log.Printf("Writing to Redis stream: %v", values)
 
 	// Добавляем запись в stream
 	if err := redisClient.XAdd(redisClient.Context(), &redis.XAddArgs{
@@ -112,21 +85,43 @@ type SmartBalancer struct {
 	current  uint64
 }
 
-func NewSmartBalancer(backends []string) *SmartBalancer {
+func NewSmartBalancer() (*SmartBalancer, error) {
+	// Получаем строку с адресами из Redis
+	result, err := redisClient.Get(redisClient.Context(), "target.services").Result()
+	if err != nil {
+		log.Printf("Failed to get services.list from Redis: %v", err)
+		return nil, err
+	}
+
+	// Если строка пустая, возвращаем пустой список
+	if result == "" {
+		return nil, fmt.Errorf("No backends found in Redis, waiting for services to register")
+	}
+
+	// Разделяем строку по запятым и формируем список адресов
+	addresses := strings.Split(result, ",")
+	backends := make([]string, 0, len(addresses))
+
+	// Формируем полные URL для каждого адреса
+	for _, addr := range addresses {
+		addr = strings.TrimSpace(addr)
+		if addr != "" {
+			backends = append(backends, addr)
+		}
+	}
+
 	return &SmartBalancer{
 		backends: backends,
-	}
+	}, nil
 }
 
 func (r *SmartBalancer) Next() string {
 	if len(r.backends) == 0 {
+		log.Printf("List of backends is empty")
 		return ""
 	}
 
-	var bestBackend string
-	maxRatio := float64(0)
-
-	hurstValues := make(map[string]string)
+	hurstValues := make(map[string]float64)
 	for _, backend := range r.backends {
 		// Получаем значение hurst из Redis
 		hurstKey := "service.hurst." + backend
@@ -136,42 +131,74 @@ func (r *SmartBalancer) Next() string {
 			log.Printf("Failed to get %s from Redis: %v", hurstKey, err)
 			continue
 		}
-		hurstValues[backend] = hurstStr
-	}
-
-	if len(r.backends) == len(hurstValues) {
-		for _, backend := range r.backends {
-			// Преобразуем значение в float64
-			hurstStr := hurstValues[backend]
-			hurst, err := strconv.ParseFloat(hurstStr, 64)
-			if err != nil {
-				log.Printf("Failed to parse hurst value %s for %s: %v", hurstStr, backend, err)
-				continue
-			}
-
-			// Избегаем деления на ноль
-			if hurst == 0 {
-				continue
-			}
-
-			// Считаем отношение 100/hurst
-			ratio := 100.0 / hurst
-
-			// Выбираем бэкенд с максимальным отношением
-			if ratio > maxRatio {
-				maxRatio = ratio
-				bestBackend = backend
-			}
+		hurst, err := strconv.ParseFloat(hurstStr, 64)
+		if err != nil {
+			log.Printf("Failed to parse hurst value %s for %s: %v", hurstStr, backend, err)
+			continue
 		}
-		log.Printf("The best backend -> %s", bestBackend)
+
+		// Избегаем деления на ноль
+		if hurst == .0 {
+			log.Printf("Hurst value is 0 for %s", backend)
+			continue
+		}
+
+		hurstValues[backend] = hurst
 	}
 
-	// Если не удалось выбрать бэкенд по hurst, используем round-robin
-	if bestBackend == "" {
+	// Если не нельзя выбрать бэкенд по hurst, используем рассчет
+	if len(r.backends) != len(hurstValues) {
 		current := uint64(time.Now().UnixNano())
-		// current := atomic.AddUint64(&r.current, 1)
-		return r.backends[(current-1)%uint64(len(r.backends))]
+		bestBackend := r.backends[(current-1)%uint64(len(r.backends))]
+		log.Printf("Calculate backend -> %s", bestBackend)
+		return bestBackend
 	}
+
+	var bestBackend string
+	var maxRatio = float64(0)
+	var maxRationStr string
+	var ratiolist strings.Builder
+	var delimiter = ""
+	var ratioMap = make(map[string]*list.List)
+	for _, backend := range r.backends {
+		// Преобразуем значение в float64
+		hurst := hurstValues[backend]
+
+		// Считаем отношение 10000/hurst
+		ratio := 10_000.0 / hurst
+		var ratioStr = fmt.Sprintf("%.3f", ratio)
+
+		// Выбираем бэкенд с максимальным отношением
+		if ratio > maxRatio {
+			maxRatio = ratio
+			maxRationStr = ratioStr
+			bestBackend = backend
+		}
+
+		if _, exists := ratioMap[ratioStr]; !exists {
+			ratioMap[ratioStr] = list.New()
+		}
+		ratioMap[ratioStr].PushBack(backend)
+		ratiolist.WriteString(delimiter + ratioStr)
+		delimiter = ", "
+	}
+
+	if ratioMap[maxRationStr].Len() == 1 {
+		log.Printf("The best backend from %d is %s (ratio list = %s)", len(r.backends), bestBackend, ratiolist.String())
+		return bestBackend
+	}
+
+	bestBackends := make([]string, 0, ratioMap[maxRationStr].Len())
+	for e := ratioMap[maxRationStr].Front(); e != nil; e = e.Next() {
+		if val, ok := e.Value.(string); ok {
+			bestBackends = append(bestBackends, val)
+		}
+	}
+
+	// Если не удалось выбрать бэкенд по hurst, используем дополнительный рассчет
+	current := uint64(time.Now().UnixNano())
+	bestBackend = bestBackends[(current-1)%uint64(len(bestBackends))]
+	log.Printf("Calculate backend %s from %d values", bestBackend, len(bestBackends))
 
 	return bestBackend
 }
@@ -240,14 +267,13 @@ func backendsJSON(backends []string) string {
 }
 
 func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
-	// Получаем список бэкендов из Redis
-	backends := getBackendsFromRedis()
-	if len(backends) == 0 {
-		log.Println("No backends found in Redis, waiting for services to register")
+	balancer, err := NewSmartBalancer()
+	if err != nil {
+		log.Printf("Error creating balancer instance: %v", err)
+		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
+		ctx.SetBodyString("{\"error\": \"Backend list is empty\"}")
+		return
 	}
-
-	balancer := NewSmartBalancer(backends)
-
 	backend := balancer.Next()
 	fullPath := "http://" + backend + ":5000" + string(ctx.Path())
 
@@ -271,7 +297,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
-	err := client.Do(req, resp)
+	err = client.Do(req, resp)
 	if err != nil {
 		log.Printf("Error forwarding request to %s ==>> %v", fullPath, err)
 		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
@@ -303,5 +329,5 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	logRequestDuration(backend, string(ctx.Path()), duration)
 
 	// Логирование результата
-	log.Printf("Request to %s:5000%s completed in %v", backend, string(ctx.Path()), duration)
+	// log.Printf("Request to %s:5000%s completed in %v", backend, string(ctx.Path()), duration)
 }

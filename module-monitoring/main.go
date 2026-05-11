@@ -1,11 +1,13 @@
 package main
 
 import (
+	"container/list"
 	"flag"
 	"log"
 	"math"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"strconv"
@@ -50,6 +52,13 @@ var (
 		},
 		[]string{"backend"},
 	)
+)
+
+// In-memory storage for values per backend with fixed size of 1000 entries (FIFO)
+var (
+	backendValues = make(map[string]*list.List) // Store values per backend
+	valuesMutex   sync.RWMutex                  // Mutex for thread-safe access
+	maxValues     = 1000                        // Maximum number of values to store per backend
 )
 
 func initRedis() {
@@ -129,6 +138,37 @@ func main() {
 	// Инициализация метрик
 	initMetrics()
 
+	// Запускаем горутину для логирования количества записей каждую минуту
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		// defer ticker.Stop()
+		for {
+			<-ticker.C
+			valuesMutex.RLock()
+			for backend, valueList := range backendValues {
+				// Преобразуем list.List в []float64 при необходимости
+				// valuesMutex.RLock()
+				values := make([]float64, 0, valueList.Len())
+				for e := backendValues[backend].Front(); e != nil; e = e.Next() {
+					if val, ok := e.Value.(float64); ok {
+						values = append(values, val)
+					}
+				}
+				// valuesMutex.RUnlock()
+
+				hurst := Hurst(values)
+				serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
+				log.Printf("Backend %s has %d stored values", backend, valueList.Len())
+
+				// Отправляем параметр Херста в Redis
+				if err := redisClient.Set(redisClient.Context(), "service.hurst."+backend, 0.5, 0).Err(); err != nil {
+					log.Printf("Failed to update service.hurst.%s in Redis: %v", backend, err)
+				}
+			}
+			valuesMutex.RUnlock()
+		}
+	}()
+
 	// Запускаем горутину для чтения из Redis stream
 	go readRequestDurations()
 
@@ -151,7 +191,7 @@ func readRequestDurations() {
 	lastID := "$"
 
 	for {
-		// Читаем из stream request.durations
+		// Читаем из stream monitoring.events
 		streamEntries, err := redisClient.XRead(redisClient.Context(), &redis.XReadArgs{
 			Streams: []string{"monitoring.events", lastID},
 			Count:   10,              // читаем до 10 сообщений за раз
@@ -180,13 +220,20 @@ func readRequestDurations() {
 				// Обновляем метрику Prometheus
 				requestsCounter.With(prometheus.Labels{"backend": backend, "path": path}).Inc()
 				requestDuration.With(prometheus.Labels{"backend": backend, "path": path}).Observe(duration)
-				serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(2.5)
-				log.Printf("Recorded request duration for %s: %f seconds", backend, duration)
+				// log.Printf("Recorded request duration for %s: %f seconds", backend, duration)
 
-				// Отправляем параметр Херста в Redis
-				if err := redisClient.Set(redisClient.Context(), "service.hurst."+backend, 2.5, 0).Err(); err != nil {
-					log.Printf("Failed to update service.hurst.%s in Redis: %v", backend, err)
+				// Сохраняем значение в памяти для этого backend
+				valuesMutex.Lock()
+				if _, exists := backendValues[backend]; !exists {
+					backendValues[backend] = list.New()
 				}
+				// Добавляем новое значение
+				backendValues[backend].PushBack(duration)
+				// Проверяем размер и удаляем старые значения при необходимости (FIFO)
+				for backendValues[backend].Len() > maxValues {
+					backendValues[backend].Remove(backendValues[backend].Front())
+				}
+				valuesMutex.Unlock()
 			}
 		}
 	}
@@ -196,7 +243,7 @@ func readRequestDurations() {
 func Hurst(data []float64) float64 {
 	n := len(data)
 	if n < 2 {
-		return 0
+		return 0.5
 	}
 
 	// 1. Находим среднее
@@ -234,7 +281,7 @@ func Hurst(data []float64) float64 {
 
 	// 5. Итоговое значение H = log(R/S) / log(n)
 	if S == 0 {
-		return 0
+		return 0.5
 	}
 	return math.Log(R/S) / math.Log(float64(n))
 }
