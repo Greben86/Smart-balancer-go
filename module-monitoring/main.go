@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"smart-balancer-go/logic"
 	"smart-balancer-go/utils"
 	"strings"
 	"sync"
@@ -65,7 +66,7 @@ var (
 var (
 	backendValues = make(map[string]*list.List) // Store values per backend
 	valuesMutex   sync.RWMutex                  // Mutex for thread-safe access
-	maxValues     = 1000                        // Maximum number of values to store per backend
+	maxValues     = 1024                        // Maximum number of values to store per backend
 )
 
 func initRedis() {
@@ -177,7 +178,7 @@ func main() {
 					}
 
 					// Подсчитываем Херст для текущего списка значений
-					hurst, _ := utils.VGHurst(values)
+					hurst, _ := logic.DFAHurst(values)
 					serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
 					// log.Printf("Backend %s has %d stored values", backend, valueList.Len())
 

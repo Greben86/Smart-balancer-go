@@ -95,7 +95,13 @@ func (lb *SmartBalancer) Next() string {
 	var ratioMap = make(map[string]*list.List)
 	for _, backend := range lb.backends {
 		// Преобразуем значение в float64
-		hurst := hurstValues[backend]
+		var hurst float64
+		if hurstValues[backend] > 1.5 {
+			hurst = hurstValues[backend]
+		} else {
+			hurst = .5
+		}
+		// hurst := hurstValues[backend]
 
 		// Считаем отношение 10000/hurst
 		ratio := 10_000.0 / hurst
