@@ -161,8 +161,8 @@ func main() {
 			if serviceStr != "" {
 				log.Printf("Target services: %s", serviceStr)
 				// Разделяем строку по запятым и формируем список адресов
-				backends := strings.Split(serviceStr, ",")
-				for _, backend := range backends {
+				backends := strings.SplitSeq(serviceStr, ",")
+				for backend := range backends {
 					log.Printf("Backend: %s", backend)
 					// Преобразуем list.List в []float64 при необходимости
 					var values []float64
@@ -179,8 +179,6 @@ func main() {
 
 					// Подсчитываем Херст для текущего списка значений
 					hurst, _ := logic.DFAHurst(values)
-					serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
-					// log.Printf("Backend %s has %d stored values", backend, valueList.Len())
 
 					// Отправляем параметр Херста в Redis
 					if err := redisClient.Set(redisClient.Context(), "service.hurst."+backend, hurst, 0).Err(); err != nil {
@@ -188,6 +186,9 @@ func main() {
 					} else {
 						log.Printf("Updated service.hurst.%s in Redis with value %f", backend, hurst)
 					}
+
+					// Обновляем метрику Prometheus
+					serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
 				}
 			} else {
 				log.Printf("No backends found in Redis")

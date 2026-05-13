@@ -14,19 +14,32 @@ func CalculateDFA(series []float64) (float64, error) {
 		return .5, fmt.Errorf("ряд слишком короткий")
 	}
 
+	for _, v := range series {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, fmt.Errorf("ряд содержит NaN или Inf")
+		}
+	}
+
 	// 1. Центрирование и интегрирование ряда (Cumulative Sum)
 	mean := stat.Mean(series, nil)
 	y := make([]float64, n)
-	currentSum := 0.0
+	currentSum := .0
 	for i, val := range series {
 		currentSum += val - mean
 		y[i] = currentSum
 	}
 
 	// Определение размеров окон (scales)
-	var scales []int
-	for s := 8; s <= n/4; s = int(float64(s) * 1.5) { // Геометрический шаг
-		scales = append(scales, s)
+	minScale, maxScale := 8, n/4
+	numScales := 20
+	scales := make([]int, 0, numScales)
+	for i := 0; i < numScales; i++ {
+		scale := int(math.Exp(math.Log(float64(minScale)) +
+			float64(i)*(math.Log(float64(maxScale))-math.Log(float64(minScale)))/float64(numScales-1)))
+		if scale > maxScale {
+			break
+		}
+		scales = append(scales, scale)
 	}
 
 	var xLog, yLog []float64
@@ -76,7 +89,10 @@ func CalculateDFA(series []float64) (float64, error) {
 }
 
 func DFAHurst(series []float64) (float64, error) {
-	hurst, _ := CalculateDFA(series)
+	hurst, err := CalculateDFA(series)
+	if err != nil {
+		return 0, err
+	}
 	fmt.Printf("DFA Hurst: %.4f\n", hurst)
 
 	// Интерпретация DFA:
@@ -87,12 +103,12 @@ func DFAHurst(series []float64) (float64, error) {
 	// alpha ~= 1.5: броуновское движение
 	// Интерпретация результатов
 	switch {
-	case hurst > 0.6:
-		fmt.Println("Интерпретация: Персистентный ряд (выраженный тренд).")
+	case hurst > 0.5:
+		fmt.Println("Персистентный ряд (долгосрочная зависимость).")
 	case hurst < 0.5:
-		fmt.Println("Интерпретация: Антиперсистентный ряд (возврат к среднему).")
+		fmt.Println("Антиперсистентный ряд (возврат к среднему).")
 	default:
-		fmt.Println("Интерпретация: Случайное блуждание (белый шум).")
+		fmt.Println("Белый шум (без долгосрочной зависимости).")
 	}
 
 	roundedHurst := math.Round(hurst*10) / 10

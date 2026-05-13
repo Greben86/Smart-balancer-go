@@ -1,11 +1,11 @@
-# my global config
+# Конфигурация Prometheus для сбора метрик
 global:
-  scrape_interval: 1s     # Set the scrape interval to every 5 seconds. Default is every 1 minute.
-  evaluation_interval: 1s # Evaluate rules every 5 seconds. The default is every 1 minute.
+  scrape_interval: 1s
+  evaluation_interval: 1s
 
 scrape_configs:
-  - job_name: 'monitoring' # The job name is assigned to scraped metrics by default.
-    metrics_path: '/metrics'               # The HTTP resource path on which to fetch metrics from targets.
-    scrape_interval: 1s                       # How frequently to scrape targets from this job.
-    static_configs:                           # A static_config allows specifying a list of targets and a common label set for them
-      - targets: ['monitoring:9090']
+  - job_name: 'module-monitoring'
+    metrics_path: '/metrics'
+    scrape_interval: 1s
+    static_configs:
+      - targets: ['module-monitoring:9090']

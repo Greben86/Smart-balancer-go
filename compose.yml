@@ -13,7 +13,12 @@ services:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://balancer:8080/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 3                                                                                                                                                                                                                                                 
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
     networks:
       - service-network
 
@@ -39,7 +44,7 @@ services:
     build:
       context: ./module-monitoring
       dockerfile: ./Dockerfile
-    container_name: monitoring
+    container_name: module-monitoring
     environment:
       - REDIS_ADDR=redis:6379
     restart: unless-stopped
@@ -48,6 +53,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
     networks:
       - service-network
     depends_on:
@@ -61,17 +71,31 @@ services:
       - TARGET_URL=http://registry:8080/heartbeat
       - INTERVAL=1
     restart: unless-stopped
-    # healthcheck:
-    #   test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://test-client:5000/health"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 3
     networks:
       - service-network
     depends_on:
       - registry
     deploy:
-      replicas: 10
+      replicas: 50
+
+  # test-client-less:
+  #   build:
+  #     context: ./test-client
+  #     dockerfile: ./Dockerfile
+  #   environment:
+  #     - TARGET_URL=http://registry:8080/heartbeat
+  #     - INTERVAL=1
+  #   restart: unless-stopped
+  #   deploy:
+  #     replicas: 3
+  #     resources:
+  #       limits:
+  #         cpus: '0.1'  # Guaranteed minimum CPU
+  #         memory: 64M  # Guaranteed minimum RAM
+  #   networks:
+  #     - service-network
+  #   depends_on:
+  #     - registry
 
   redis:
     image: redis:8.8-m03-trixie

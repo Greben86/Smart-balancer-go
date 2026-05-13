@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"smart-balancer-go/logic"
 	"smart-balancer-go/utils"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,8 +58,6 @@ func logRequestDuration(backend string, path string, duration time.Duration, sta
 		"timestamp":   time.Now().Unix(),
 	}
 
-	// log.Printf("Writing to Redis stream: %v", values)
-
 	// Добавляем запись в stream
 	if err := redisClient.XAdd(redisClient.Context(), &redis.XAddArgs{
 		Stream: "monitoring.events", // имя stream
@@ -99,6 +99,51 @@ func main() {
 	// Инициализация Redis
 	initRedis()
 
+	// Запускаем горутину для логирования количества записей каждую минуту
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		for {
+			<-ticker.C
+			// Получаем строку с адресами из Redis
+			serviceStr, err := redisClient.Get(redisClient.Context(), "target.services").Result()
+			if err != nil {
+				log.Printf("Failed to get target.services from Redis: %v", err)
+			}
+			if serviceStr != "" {
+				// Разделяем строку по запятым и формируем список адресов
+				backends := strings.SplitSeq(serviceStr, ",")
+				for backend := range backends {
+					var curCount int
+					curCountStr, err := redisClient.Get(redisClient.Context(), "requests.cur."+backend).Result()
+					if err != nil {
+						curCount = 0
+					} else {
+						curCount, _ = strconv.Atoi(curCountStr)
+					}
+					if err := redisClient.Set(redisClient.Context(), "requests.prev."+backend, curCount, 0).Err(); err != nil {
+						log.Printf("Failed to update requests.prev.%s in Redis: %v", backend, err)
+					} else {
+						log.Printf("Updated requests.prev.%s in Redis with value %v", backend, curCount)
+					}
+					if err := redisClient.Set(redisClient.Context(), "requests.cur."+backend, 0, 0).Err(); err != nil {
+						log.Printf("Failed to update requests.cur.%s in Redis: %v", backend, err)
+					} else {
+						log.Printf("Updated requests.cur.%s in Redis with value 0", backend)
+					}
+				}
+				// Записываем текущее время для backend
+				timestamp := time.Now().Local().UnixMilli()
+				if err := redisClient.Set(redisClient.Context(), "timestamp.current", timestamp, 0).Err(); err != nil {
+					log.Printf("Failed to update timestamp.current in Redis: %v", err)
+				} else {
+					log.Printf("Updated timestamp.current in Redis with value %d", timestamp)
+				}
+			} else {
+				log.Printf("No backends found in Redis")
+			}
+		}
+	}()
+
 	httpClient := &fasthttp.Client{
 		MaxIdleConnDuration: 30 * time.Second,
 	}
@@ -132,6 +177,9 @@ func backendsJSON(backends []string) string {
 }
 
 func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
+	var statusCode int
+	// Начало точного измерения времени
+	startTime := time.Now()
 	balancer, err := logic.NewSmartBalancer(redisClient)
 	if err != nil {
 		log.Printf("Error creating balancer instance: %v", err)
@@ -140,53 +188,54 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 		return
 	}
 	backend := balancer.Next()
-	fullPath := "http://" + backend + ":5000" + string(ctx.Path())
-
-	// Начало точного измерения времени
-	startTime := time.Now()
-	// Создание запроса к бэкенду
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-
-	req.SetRequestURI(fullPath)
-	req.SetTimeout(time.Duration(time.Duration.Seconds(5)))
-	req.Header.SetMethodBytes(ctx.Method())
-	req.SetBody(ctx.PostBody())
-
-	// Копирование заголовков
-	ctx.Request.Header.VisitAll(func(key, value []byte) {
-		req.Header.SetBytesKV(key, value)
-	})
-
-	// Выполнение запроса
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-
-	var statusCode int
-	err = client.Do(req, resp)
-	if err != nil {
-		log.Printf("Error forwarding request to %s ==>> %v", fullPath, err)
-		statusCode = fasthttp.StatusServiceUnavailable
+	if backend == "" {
+		log.Printf("Too many requests")
+		statusCode = fasthttp.StatusTooManyRequests
 		ctx.SetStatusCode(statusCode)
-		ctx.SetBodyString("{\"error\": \"Backend service unavailable\"}")
+		ctx.SetBodyString("{\"error\": \"Too many requests\"}")
 	} else {
-		// Копирование заголовков ответа
-		resp.Header.VisitAll(func(key, value []byte) {
-			ctx.Response.Header.SetBytesKV(key, value)
+		fullPath := "http://" + backend + ":5000" + string(ctx.Path())
+
+		// Создание запроса к бэкенду
+		req := fasthttp.AcquireRequest()
+		defer fasthttp.ReleaseRequest(req)
+
+		req.SetRequestURI(fullPath)
+		req.SetTimeout(time.Duration(time.Duration.Seconds(5)))
+		req.Header.SetMethodBytes(ctx.Method())
+		req.SetBody(ctx.PostBody())
+
+		// Копирование заголовков
+		ctx.Request.Header.VisitAll(func(key, value []byte) {
+			req.Header.SetBytesKV(key, value)
 		})
 
-		// Копирование статуса и тела
-		statusCode = resp.StatusCode()
-		ctx.SetStatusCode(statusCode)
-		ctx.SetBody(resp.Body())
+		// Выполнение запроса
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseResponse(resp)
+
+		err = client.Do(req, resp)
+		if err != nil {
+			log.Printf("Error forwarding request to %s ==>> %v", fullPath, err)
+			statusCode = fasthttp.StatusServiceUnavailable
+			ctx.SetStatusCode(statusCode)
+			ctx.SetBodyString("{\"error\": \"Backend service unavailable\"}")
+		} else {
+			// Копирование заголовков ответа
+			resp.Header.VisitAll(func(key, value []byte) {
+				ctx.Response.Header.SetBytesKV(key, value)
+			})
+
+			// Копирование статуса и тела
+			statusCode = resp.StatusCode()
+			ctx.SetStatusCode(statusCode)
+			ctx.SetBody(resp.Body())
+		}
 	}
 
 	// Точное измерение времени выполнения
 	duration := time.Since(startTime)
 
 	// Запись времени выполнения в Redis stream
-	logRequestDuration(backend, string(ctx.Path()), duration, statusCode)
-
-	// Логирование результата
-	// log.Printf("Request to %s:5000%s completed in %v", backend, string(ctx.Path()), duration)
+	go logRequestDuration(backend, string(ctx.Path()), duration, statusCode)
 }
