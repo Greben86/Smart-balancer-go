@@ -65,7 +65,7 @@ func (lb *SmartBalancer2) Next() string {
 		timestamp, _ := strconv.ParseInt(timestampStr, 10, 64)
 		now := time.Now().Local().UnixMilli()
 		elapsedMs := now - timestamp
-		remainingMs = 10000 - elapsedMs
+		remainingMs = max(1000-elapsedMs, 0)
 	}
 
 	hurstValues := make(map[string]float64)
@@ -87,7 +87,7 @@ func (lb *SmartBalancer2) Next() string {
 			preCount, _ = strconv.Atoi(preCountStr)
 		}
 
-		currentRate := (float64(preCount) * (float64(remainingMs) / 10000)) + float64(curCount)
+		currentRate := (float64(preCount) * (float64(remainingMs) / 1000)) + float64(curCount)
 		if currentRate >= 1000 {
 			continue
 		}
@@ -117,7 +117,7 @@ func (lb *SmartBalancer2) Next() string {
 	}
 
 	// Если не нельзя выбрать бэкенд по hurst, используем рассчет
-	if len(lb.backends) != len(hurstValues) {
+	if len(rateValues) != len(hurstValues) {
 		bestBackends := make([]string, 0, len(rateValues))
 		for backend := range rateValues {
 			bestBackends = append(bestBackends, backend)
@@ -134,26 +134,27 @@ func (lb *SmartBalancer2) Next() string {
 	}
 
 	var bestBackend string
-	var maxRatio = int64(0)
-	var maxRatioStr string
+	var minRatio = math.MaxInt64
+	var minRatioStr string
 	var ratioMap = make(map[string]*list.List)
 	for backend, count := range rateValues {
 		// Преобразуем значение в float64
-		var hurst float64
-		if hurstValues[backend] > 1.5 {
-			hurst = hurstValues[backend]
-		} else {
-			hurst = .5
-		}
+		// var hurst float64
+		// if hurstValues[backend] > 1.5 {
+		// 	hurst = hurstValues[backend]
+		// } else {
+		// 	hurst = .5
+		// }
+		hurst := hurstValues[backend]
 
 		// Считаем отношение количества запросов к показателю Херста
-		ratio := int64(math.Round(100 * float64(count) / hurst))
+		ratio := int(math.Round(100 * float64(count) / hurst))
 		var ratioStr = fmt.Sprint(ratio)
 
 		// Выбираем бэкенд с максимальным отношением
-		if ratio > maxRatio {
-			maxRatio = ratio
-			maxRatioStr = ratioStr
+		if ratio < minRatio {
+			minRatio = ratio
+			minRatioStr = ratioStr
 			bestBackend = backend
 		}
 
@@ -163,13 +164,13 @@ func (lb *SmartBalancer2) Next() string {
 		ratioMap[ratioStr].PushBack(backend)
 	}
 
-	if ratioMap[maxRatioStr] != nil && ratioMap[maxRatioStr].Len() == 1 {
-		log.Printf("The best backend from %d is %s ratio = %s", len(lb.backends), bestBackend, maxRatioStr)
+	if ratioMap[minRatioStr] != nil && ratioMap[minRatioStr].Len() == 1 {
+		log.Printf("The best backend from %d is %s ratio = %s", len(lb.backends), bestBackend, minRatioStr)
 		return bestBackend
 	}
 
-	bestBackends := make([]string, 0, ratioMap[maxRatioStr].Len())
-	for e := ratioMap[maxRatioStr].Front(); e != nil; e = e.Next() {
+	bestBackends := make([]string, 0, ratioMap[minRatioStr].Len())
+	for e := ratioMap[minRatioStr].Front(); e != nil; e = e.Next() {
 		if val, ok := e.Value.(string); ok {
 			bestBackends = append(bestBackends, val)
 		}

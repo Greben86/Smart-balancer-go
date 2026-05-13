@@ -9,6 +9,7 @@ import (
 	"smart-balancer-go/utils"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"strconv"
@@ -64,9 +65,10 @@ var (
 
 // In-memory storage for values per backend with fixed size of 1000 entries (FIFO)
 var (
-	backendValues = make(map[string]*list.List) // Store values per backend
-	valuesMutex   sync.RWMutex                  // Mutex for thread-safe access
-	maxValues     = 1024                        // Maximum number of values to store per backend
+	backendValues = make(map[string]*list.List)    // Store values per backend
+	backendNews   = make(map[string]*atomic.Int64) // Store values per backend
+	valuesMutex   sync.RWMutex                     // Mutex for thread-safe access
+	maxValues     = 1024                           // Maximum number of values to store per backend
 )
 
 func initRedis() {
@@ -163,6 +165,10 @@ func main() {
 				// Разделяем строку по запятым и формируем список адресов
 				backends := strings.SplitSeq(serviceStr, ",")
 				for backend := range backends {
+					if value, exists := backendNews[backend]; !exists || value.Load() == 0 {
+						continue
+					}
+
 					log.Printf("Backend: %s", backend)
 					// Преобразуем list.List в []float64 при необходимости
 					var values []float64
@@ -189,6 +195,8 @@ func main() {
 
 					// Обновляем метрику Prometheus
 					serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
+
+					backendNews[backend].Store(0)
 				}
 			} else {
 				log.Printf("No backends found in Redis")
@@ -253,6 +261,7 @@ func readRequestDurations() {
 				// Сохраняем значение в памяти для этого backend
 				go func() {
 					valuesMutex.Lock()
+					defer valuesMutex.Unlock()
 					if _, exists := backendValues[backend]; !exists {
 						backendValues[backend] = list.New()
 					}
@@ -262,7 +271,11 @@ func readRequestDurations() {
 					for backendValues[backend].Len() > maxValues {
 						backendValues[backend].Remove(backendValues[backend].Front())
 					}
-					valuesMutex.Unlock()
+
+					if _, exists := backendNews[backend]; !exists {
+						backendNews[backend] = &atomic.Int64{}
+					}
+					backendNews[backend].Add(1)
 				}()
 			}
 		}

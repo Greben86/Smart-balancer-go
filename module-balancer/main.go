@@ -101,7 +101,7 @@ func main() {
 
 	// Запускаем горутину для логирования количества записей каждую минуту
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(time.Second)
 		for {
 			<-ticker.C
 			// Получаем строку с адресами из Redis
@@ -122,21 +122,15 @@ func main() {
 					}
 					if err := redisClient.Set(redisClient.Context(), "requests.prev."+backend, curCount, 0).Err(); err != nil {
 						log.Printf("Failed to update requests.prev.%s in Redis: %v", backend, err)
-					} else {
-						log.Printf("Updated requests.prev.%s in Redis with value %v", backend, curCount)
 					}
 					if err := redisClient.Set(redisClient.Context(), "requests.cur."+backend, 0, 0).Err(); err != nil {
 						log.Printf("Failed to update requests.cur.%s in Redis: %v", backend, err)
-					} else {
-						log.Printf("Updated requests.cur.%s in Redis with value 0", backend)
 					}
 				}
 				// Записываем текущее время для backend
 				timestamp := time.Now().Local().UnixMilli()
 				if err := redisClient.Set(redisClient.Context(), "timestamp.current", timestamp, 0).Err(); err != nil {
 					log.Printf("Failed to update timestamp.current in Redis: %v", err)
-				} else {
-					log.Printf("Updated timestamp.current in Redis with value %d", timestamp)
 				}
 			} else {
 				log.Printf("No backends found in Redis")
@@ -180,7 +174,7 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	var statusCode int
 	// Начало точного измерения времени
 	startTime := time.Now()
-	balancer, err := logic.NewSmartBalancer(redisClient)
+	balancer, err := logic.NewSmartBalancer2(redisClient)
 	if err != nil {
 		log.Printf("Error creating balancer instance: %v", err)
 		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
