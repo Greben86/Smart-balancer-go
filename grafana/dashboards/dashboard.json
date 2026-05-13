@@ -310,7 +310,7 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "avg by (backend) (rate(smart_balancer_service_hurst_value_sum[$__rate_interval]))",
+                        "expr": "avg by (backend) (rate(smart_balancer_service_hurst_value_sum[$__rate_interval]) * 10 - 0.5)",
                         "legendFormat": "__auto",
                         "range": true
                       }

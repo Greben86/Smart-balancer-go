@@ -87,12 +87,12 @@ func (lb *SmartBalancer2) Next() string {
 			preCount, _ = strconv.Atoi(preCountStr)
 		}
 
-		currentRate := (float64(preCount) * (float64(remainingMs) / 1000)) + float64(curCount)
-		if currentRate >= 1000 {
+		currentRate := int64(math.Round(float64(preCount)*(float64(remainingMs)/1000)) + float64(curCount))
+		if currentRate >= 100 {
 			continue
 		}
 
-		rateValues[backend] = int64(math.Round(currentRate))
+		rateValues[backend] = currentRate
 
 		// Получаем значение hurst из Redis
 		hurstKey := "service.hurst." + backend
@@ -125,7 +125,7 @@ func (lb *SmartBalancer2) Next() string {
 
 		// Если не удалось выбрать бэкенд по hurst, используем дополнительный рассчет
 		current := uint64(time.Now().UnixNano())
-		bestBackend := bestBackends[(current-1)%uint64(len(bestBackends))]
+		bestBackend := bestBackends[current%uint64(len(bestBackends))]
 		log.Printf("Calculate backend %s from %d values", bestBackend, len(bestBackends))
 		// Увеличиваем счётчик запросов по IP
 		key := "requests.cur." + bestBackend
@@ -135,42 +135,32 @@ func (lb *SmartBalancer2) Next() string {
 
 	var bestBackend string
 	var minRatio = math.MaxInt64
-	var minRatioStr string
-	var ratioMap = make(map[string]*list.List)
+	var ratioMap = make(map[int]*list.List)
 	for backend, count := range rateValues {
-		// Преобразуем значение в float64
-		// var hurst float64
-		// if hurstValues[backend] > 1.5 {
-		// 	hurst = hurstValues[backend]
-		// } else {
-		// 	hurst = .5
-		// }
 		hurst := hurstValues[backend]
 
 		// Считаем отношение количества запросов к показателю Херста
-		ratio := int(math.Round(100 * float64(count) / hurst))
-		var ratioStr = fmt.Sprint(ratio)
+		ratio := int(math.Round(10 * float64(count) / hurst))
 
 		// Выбираем бэкенд с максимальным отношением
 		if ratio < minRatio {
 			minRatio = ratio
-			minRatioStr = ratioStr
 			bestBackend = backend
 		}
 
-		if _, exists := ratioMap[ratioStr]; !exists {
-			ratioMap[ratioStr] = list.New()
+		if _, exists := ratioMap[ratio]; !exists {
+			ratioMap[ratio] = list.New()
 		}
-		ratioMap[ratioStr].PushBack(backend)
+		ratioMap[ratio].PushBack(backend)
 	}
 
-	if ratioMap[minRatioStr] != nil && ratioMap[minRatioStr].Len() == 1 {
-		log.Printf("The best backend from %d is %s ratio = %s", len(lb.backends), bestBackend, minRatioStr)
+	if ratioMap[minRatio].Len() == 1 {
+		log.Printf("The best backend from %d is %s ratio = %v", len(lb.backends), bestBackend, minRatio)
 		return bestBackend
 	}
 
-	bestBackends := make([]string, 0, ratioMap[minRatioStr].Len())
-	for e := ratioMap[minRatioStr].Front(); e != nil; e = e.Next() {
+	bestBackends := make([]string, 0, ratioMap[minRatio].Len())
+	for e := ratioMap[minRatio].Front(); e != nil; e = e.Next() {
 		if val, ok := e.Value.(string); ok {
 			bestBackends = append(bestBackends, val)
 		}
@@ -178,7 +168,7 @@ func (lb *SmartBalancer2) Next() string {
 
 	// Если не удалось выбрать бэкенд по hurst, используем дополнительный рассчет
 	current := uint64(time.Now().UnixNano())
-	bestBackend = bestBackends[(current-1)%uint64(len(bestBackends))]
+	bestBackend = bestBackends[current%uint64(len(bestBackends))]
 	log.Printf("Calculate backend %s from %d values", bestBackend, len(bestBackends))
 
 	// Увеличиваем счётчик запросов по IP

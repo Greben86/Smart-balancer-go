@@ -76,7 +76,7 @@ services:
     depends_on:
       - registry
     deploy:
-      replicas: 50
+      replicas: 10
 
   # test-client-less:
   #   build:
