@@ -45,6 +45,7 @@ func calculateHurstVG(degrees []float64, length int) float64 {
 	n := float64(length)
 
 	for k, count := range counts {
+		// Исключаем k=0, так как log(0) недопустим
 		if k > 0 {
 			logK = append(logK, math.Log(k))
 			logP = append(logP, math.Log(count/n))
@@ -64,11 +65,26 @@ func calculateHurstVG(degrees []float64, length int) float64 {
 
 func VGHurst(series []float64) (float64, error) {
 	length := len(series)
-	if length < 100 {
-		return .5, nil
+	if length < 512 {
+		return .5, fmt.Errorf("ряд слишком короткий")
 	}
 
-	degrees := getDegrees(series)
+	for _, v := range series {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, fmt.Errorf("ряд содержит NaN или Inf")
+		}
+	}
+
+	// 1. Центрирование и интегрирование ряда (Cumulative Sum)
+	mean := stat.Mean(series, nil)
+	data := make([]float64, length)
+	currentSum := .0
+	for i, val := range series {
+		currentSum += val - mean
+		data[i] = currentSum
+	}
+
+	degrees := getDegrees(data)
 	hurst := calculateHurstVG(degrees, length)
 
 	fmt.Printf("Оценка показателя Хёрста (VG): %.4f\n", hurst)

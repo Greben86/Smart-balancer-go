@@ -172,8 +172,6 @@ func backendsJSON(backends []string) string {
 
 func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 	var statusCode int
-	// Начало точного измерения времени
-	startTime := time.Now()
 	balancer, err := logic.NewSmartBalancer2(redisClient)
 	if err != nil {
 		log.Printf("Error creating balancer instance: %v", err)
@@ -182,6 +180,8 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 		return
 	}
 	backend := balancer.Next()
+	// Начало точного измерения времени
+	startTime := time.Now()
 	if backend == "" {
 		log.Printf("Too many requests")
 		statusCode = fasthttp.StatusTooManyRequests

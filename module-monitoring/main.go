@@ -184,7 +184,7 @@ func main() {
 					}
 
 					// Подсчитываем Херст для текущего списка значений
-					hurst, _ := logic.DFAHurst(values)
+					hurst, _ := logic.VGHurst(values)
 
 					// Отправляем параметр Херста в Redis
 					if err := redisClient.Set(redisClient.Context(), "service.hurst."+backend, hurst, 0).Err(); err != nil {
