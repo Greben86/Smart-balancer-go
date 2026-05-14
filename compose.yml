@@ -1,26 +1,94 @@
+version: "3.9"
+
 services:
-  balancer:
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedByDefault=false
+      - --entrypoints.web.address=:8080 # Внешний порт Traefik
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - service-network
+
+  balancer1:
     build:
       context: ./module-balancer
       dockerfile: ./Dockerfile
-    container_name: balancer
-    ports:
-      - "8080:8080"
+    container_name: module_balancer_1
     environment:
-      - REDIS_ADDR=redis:6379
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://balancer:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3                                                                                                                                                                                                                                                 
+      - CONTAINER_NODE_NAME=node_1
+      - REDIS_ADDR=redis:6379                                                                                                                                                                                                                                              
     deploy:
       resources:
         limits:
-          cpus: '1'
-          memory: 1G
+          cpus: '0.5'
+          memory: 512M
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.webapp.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.webapp.entrypoints=web"
+      # ВАЖНО: порт, который слушает микросервис внутри своего контейнера
+      - "traefik.http.services.webapp.loadbalancer.server.port=8080" 
     networks:
       - service-network
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  balancer2:
+    build:
+      context: ./module-balancer
+      dockerfile: ./Dockerfile
+    container_name: module_balancer_2
+    environment:
+      - CONTAINER_NODE_NAME=node_2
+      - REDIS_ADDR=redis:6379                                                                                                                                                                                                                                              
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.webapp.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.webapp.entrypoints=web"
+      # ВАЖНО: порт, который слушает микросервис внутри своего контейнера
+      - "traefik.http.services.webapp.loadbalancer.server.port=8080" 
+    networks:
+      - service-network
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  balancer3:
+    build:
+      context: ./module-balancer
+      dockerfile: ./Dockerfile
+    container_name: module_balancer_3
+    environment:
+      - CONTAINER_NODE_NAME=node_3
+      - REDIS_ADDR=redis:6379                                                                                                                                                                                                                                              
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.webapp.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.webapp.entrypoints=web"
+      # ВАЖНО: порт, который слушает микросервис внутри своего контейнера
+      - "traefik.http.services.webapp.loadbalancer.server.port=8080" 
+    networks:
+      - service-network
+    depends_on:
+      redis:
+        condition: service_healthy
 
   registry:
     build:
@@ -29,7 +97,6 @@ services:
     container_name: registry
     environment:
       - REDIS_ADDR=redis:6379
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://registry:8080/health"]
       interval: 10s
@@ -38,7 +105,8 @@ services:
     networks:
       - service-network
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
   monitoring:
     build:
@@ -47,12 +115,6 @@ services:
     container_name: module-monitoring
     environment:
       - REDIS_ADDR=redis:6379
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://monitoring:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
     deploy:
       resources:
         limits:
@@ -61,50 +123,32 @@ services:
     networks:
       - service-network
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
-  test-client:
+  test-microservice:
     build:
       context: ./test-client
       dockerfile: ./Dockerfile
     environment:
       - TARGET_URL=http://registry:8080/heartbeat
       - INTERVAL=1
-    restart: unless-stopped
     networks:
       - service-network
-    depends_on:
-      - registry
     deploy:
-      replicas: 30
-
-  # test-client-less:
-  #   build:
-  #     context: ./test-client
-  #     dockerfile: ./Dockerfile
-  #   environment:
-  #     - TARGET_URL=http://registry:8080/heartbeat
-  #     - INTERVAL=1
-  #   restart: unless-stopped
-  #   deploy:
-  #     replicas: 3
-  #     resources:
-  #       limits:
-  #         cpus: '0.1'  # Guaranteed minimum CPU
-  #         memory: 64M  # Guaranteed minimum RAM
-  #   networks:
-  #     - service-network
-  #   depends_on:
-  #     - registry
+      replicas: 23
 
   redis:
     image: redis:8.8-m03-trixie
-    ports:
-      - "6379:6379"
     volumes:
       - redis-data:/data
-    restart: unless-stopped
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "-h", "localhost", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     networks:
       - service-network
 
@@ -123,7 +167,6 @@ services:
       - '--web.enable-admin-api'
     ports:
       - "9090:9090"
-    restart: unless-stopped
     environment:
       TZ: "Europe/Moscow"
     networks:
@@ -142,12 +185,6 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
-    healthcheck:
-      test: [ "CMD-SHELL", "wget -q --tries=1 -O- http://grafana:3000/api/health" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
     networks:
       - service-network
     depends_on:

@@ -36,14 +36,14 @@ var (
 			Name: "smart_balancer_requests_count",
 			Help: "Количество запросов к микросервисам",
 		},
-		[]string{"backend", "path"},
+		[]string{"node", "backend", "path"},
 	)
 	statusCounter = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "smart_balancer_status_code_count",
 			Help: "Количество запросов к микросервисам",
 		},
-		[]string{"status_code", "backend", "path"},
+		[]string{"node", "status_code", "backend", "path"},
 	)
 	requestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -51,7 +51,7 @@ var (
 			Help:    "Request duration in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"backend", "path"},
+		[]string{"node", "backend", "path"},
 	)
 	serviceHurst = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -145,6 +145,45 @@ func main() {
 	// Инициализация Redis
 	initRedis()
 
+	// Запускаем горутину для логирования количества записей каждую минуту
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		for {
+			<-ticker.C
+			// Получаем строку с адресами из Redis
+			serviceStr, err := redisClient.Get(redisClient.Context(), "target.services").Result()
+			if err != nil {
+				log.Printf("Failed to get target.services from Redis: %v", err)
+			}
+			if serviceStr != "" {
+				// Разделяем строку по запятым и формируем список адресов
+				backends := strings.SplitSeq(serviceStr, ",")
+				for backend := range backends {
+					var curCount int
+					curCountStr, err := redisClient.Get(redisClient.Context(), "requests.cur."+backend).Result()
+					if err != nil {
+						curCount = 0
+					} else {
+						curCount, _ = strconv.Atoi(curCountStr)
+					}
+					if err := redisClient.Set(redisClient.Context(), "requests.prev."+backend, curCount, 0).Err(); err != nil {
+						log.Printf("Failed to update requests.prev.%s in Redis: %v", backend, err)
+					}
+					if err := redisClient.Set(redisClient.Context(), "requests.cur."+backend, 0, 0).Err(); err != nil {
+						log.Printf("Failed to update requests.cur.%s in Redis: %v", backend, err)
+					}
+				}
+				// Записываем текущее время для backend
+				timestamp := time.Now().Local().UnixMilli()
+				if err := redisClient.Set(redisClient.Context(), "timestamp.current", timestamp, 0).Err(); err != nil {
+					log.Printf("Failed to update timestamp.current in Redis: %v", err)
+				}
+			} else {
+				log.Printf("No backends found in Redis")
+			}
+		}
+	}()
+
 	// Инициализация метрик
 	initMetrics()
 
@@ -154,7 +193,6 @@ func main() {
 		// defer ticker.Stop()
 		for {
 			<-ticker.C
-			log.Println("Start calculate hurst")
 			// Получаем строку с адресами из Redis
 			serviceStr, err := redisClient.Get(redisClient.Context(), "target.services").Result()
 			if err != nil {
@@ -248,15 +286,16 @@ func readRequestDurations() {
 				lastID = entry.ID
 
 				// Извлекаем данные из сообщения
+				nodeName := entry.Values["node"].(string)
 				durationStr := entry.Values["duration"].(string)
 				duration, _ := strconv.ParseFloat(durationStr, 64)
 				backend := entry.Values["backend"].(string)
 				path := entry.Values["path"].(string)
 				statusStr := entry.Values["status_code"].(string)
 				// Обновляем метрику Prometheus
-				requestsCounter.With(prometheus.Labels{"backend": backend, "path": path}).Inc()
-				statusCounter.With(prometheus.Labels{"status_code": statusStr, "backend": backend, "path": path}).Inc()
-				requestDuration.With(prometheus.Labels{"backend": backend, "path": path}).Observe(duration)
+				requestsCounter.With(prometheus.Labels{"node": nodeName, "backend": backend, "path": path}).Inc()
+				statusCounter.With(prometheus.Labels{"node": nodeName, "status_code": statusStr, "backend": backend, "path": path}).Inc()
+				requestDuration.With(prometheus.Labels{"node": nodeName, "backend": backend, "path": path}).Observe(duration)
 
 				// Сохраняем значение в памяти для этого backend
 				go func() {
