@@ -41,14 +41,14 @@ var (
 	statusCounter = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "smart_balancer_status_code_count",
-			Help: "Количество запросов к микросервисам",
+			Help: "Количество статусов ответов микросервисов",
 		},
 		[]string{"node", "status_code", "backend", "path"},
 	)
 	requestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name: "smart_balancer_request_duration_seconds",
-			Help: "Request duration in seconds",
+			Help: "Задержка обработки запросов микросервисами",
 			// --- НАЧАЛО ИЗМЕНЕНИЙ ---
 			// Создаем экспоненциальный набор корзин:
 			//   * Стартуем с 0.01 секунды (10 мс)
@@ -60,11 +60,10 @@ var (
 		},
 		[]string{"node", "backend", "path"},
 	)
-	serviceHurst = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "smart_balancer_service_hurst_value",
-			Help:    "Request duration in seconds",
-			Buckets: []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5},
+	serviceHurst = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "smart_balancer_service_hurst_value",
+			Help: "Показатель Херста каждого микросервиса",
 		},
 		[]string{"backend"},
 	)
@@ -239,7 +238,7 @@ func main() {
 					}
 
 					// Обновляем метрику Prometheus
-					serviceHurst.With(prometheus.Labels{"backend": backend}).Observe(hurst)
+					serviceHurst.With(prometheus.Labels{"backend": backend}).Set(hurst)
 
 					backendNews[backend].Store(0)
 				}

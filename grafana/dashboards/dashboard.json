@@ -68,7 +68,7 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "histogram_quantile(0.5, avg by(le, backend) (rate(smart_balancer_service_hurst_value_bucket[$__rate_interval])))",
+                        "expr": "histogram_quantile(0.5, avg by(le, backend) (rate(smart_balancer_request_duration_seconds_bucket[$__rate_interval])))",
                         "legendFormat": "__auto",
                         "range": true
                       }
@@ -192,7 +192,7 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "avg by (backend) (increase(smart_balancer_requests_count[$__rate_interval]))",
+                        "expr": "avg by (backend) (rate(smart_balancer_requests_count[$__rate_interval]))",
                         "legendFormat": "__auto",
                         "range": true
                       }
@@ -310,7 +310,7 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "histogram_quantile(0.5, avg by (le, backend) (increase(smart_balancer_service_hurst_value_bucket[$__rate_interval])))",
+                        "expr": "smart_balancer_service_hurst_value",
                         "legendFormat": "__auto",
                         "range": true
                       }
@@ -428,7 +428,7 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum by (status_code) (increase(smart_balancer_status_code_count[$__rate_interval]))",
+                        "expr": "sum by (status_code) (rate(smart_balancer_status_code_count[$__rate_interval]))",
                         "legendFormat": "__auto",
                         "range": true
                       }
@@ -664,7 +664,7 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum by (node) (increase(smart_balancer_requests_count[$__rate_interval]))",
+                        "expr": "sum by (node) (rate(smart_balancer_requests_count[$__rate_interval]))",
                         "legendFormat": "__auto",
                         "range": true
                       }
