@@ -1,5 +1,7 @@
 version: "3.9"
 
+name: "smart-balancer-go"
+
 services:
   traefik:
     image: traefik:v3.1
@@ -139,16 +141,16 @@ services:
       replicas: 23
 
   redis:
-    image: redis:8.8-m03-trixie
+    image: redis:8.8-m03-alpine3.23
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes
     healthcheck:
-      test: ["CMD", "redis-cli", "-h", "localhost", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 15s
+      retries: 60        # Ждать до 5 * 60 = 300 секунд (5 минут)
+      start_period: 10s
     networks:
       - service-network
 

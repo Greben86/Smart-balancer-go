@@ -47,9 +47,16 @@ var (
 	)
 	requestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "smart_balancer_request_duration_seconds",
-			Help:    "Request duration in seconds",
-			Buckets: prometheus.DefBuckets,
+			Name: "smart_balancer_request_duration_seconds",
+			Help: "Request duration in seconds",
+			// --- НАЧАЛО ИЗМЕНЕНИЙ ---
+			// Создаем экспоненциальный набор корзин:
+			//   * Стартуем с 0.01 секунды (10 мс)
+			//   * Увеличиваем каждую следующую границу в 2 раза (factor = 2)
+			//   * Создаем всего 20 корзин
+			//   * Последняя граница будет: 0.01 * 2^19 ≈ 5242 секунды (около 87 минут)
+			Buckets: prometheus.ExponentialBuckets(0.01, 2, 20),
+			// --- КОНЕЦ ИЗМЕНЕНИЙ ---
 		},
 		[]string{"node", "backend", "path"},
 	)
@@ -57,7 +64,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "smart_balancer_service_hurst_value",
 			Help:    "Request duration in seconds",
-			Buckets: prometheus.DefBuckets,
+			Buckets: []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5},
 		},
 		[]string{"backend"},
 	)
