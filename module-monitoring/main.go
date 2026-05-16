@@ -29,6 +29,35 @@ var (
 // Redis клиент
 var redisClient *redis.Client
 
+// Объявляем Lua-скрипт один раз на уровне пакета
+var updateScript = redis.NewScript(`
+	local timestampKey = "timestamp.current"
+	local ts = ARGV[1]           -- timestamp
+
+	-- Проходим по всем backend из KEYS
+	for i = 1, #KEYS do
+		local backend = KEYS[i]
+		local curKey = "requests.cur." .. backend
+		local prevKey = "requests.prev." .. backend
+
+		-- Получаем текущее значение cur
+		local currentCur = redis.call("GET", curKey)
+		if currentCur then
+			redis.call("SET", prevKey, currentCur)
+		else
+			redis.call("SET", prevKey, "0")
+		end
+
+		-- Сбрасываем cur в 0
+		redis.call("SET", curKey, "0")
+	end
+
+	-- Обновляем общую временную метку
+	redis.call("SET", timestampKey, ts)
+
+	return 1
+`)
+
 // Metrics
 var (
 	requestsCounter = promauto.NewCounterVec(
@@ -145,6 +174,20 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 	rw.ctx.SetStatusCode(statusCode)
 }
 
+// updateRequestsAndTimestamp обновляет счётчики и временную метку атомарно
+func updateRequestsAndTimestamp(backends []string) error {
+	ts := time.Now().Local().UnixMilli()
+
+	// Выполняем скрипт
+	err := updateScript.Run(redisClient.Context(), redisClient, backends, ts).Err()
+	if err != nil {
+		log.Printf("Failed to update counters for rate limit in Redis: %v", err)
+		return err
+	}
+
+	return nil
+}
+
 func main() {
 	flag.Parse()
 
@@ -163,27 +206,11 @@ func main() {
 			}
 			if serviceStr != "" {
 				// Разделяем строку по запятым и формируем список адресов
-				backends := strings.SplitSeq(serviceStr, ",")
-				for backend := range backends {
-					var curCount int
-					curCountStr, err := redisClient.Get(redisClient.Context(), "requests.cur."+backend).Result()
-					if err != nil {
-						curCount = 0
-					} else {
-						curCount, _ = strconv.Atoi(curCountStr)
-					}
-					if err := redisClient.Set(redisClient.Context(), "requests.prev."+backend, curCount, 0).Err(); err != nil {
-						log.Printf("Failed to update requests.prev.%s in Redis: %v", backend, err)
-					}
-					if err := redisClient.Set(redisClient.Context(), "requests.cur."+backend, 0, 0).Err(); err != nil {
-						log.Printf("Failed to update requests.cur.%s in Redis: %v", backend, err)
-					}
+				var backends []string
+				for val := range strings.SplitSeq(serviceStr, ",") {
+					backends = append(backends, val)
 				}
-				// Записываем текущее время для backend
-				timestamp := time.Now().Local().UnixMilli()
-				if err := redisClient.Set(redisClient.Context(), "timestamp.current", timestamp, 0).Err(); err != nil {
-					log.Printf("Failed to update timestamp.current in Redis: %v", err)
-				}
+				updateRequestsAndTimestamp(backends)
 			} else {
 				log.Printf("No backends found in Redis")
 			}

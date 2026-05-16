@@ -142,15 +142,10 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 		ctx.SetBodyString("{\"error\": \"Backend list is empty\"}")
 		return
 	}
-	backend := balancer.Next()
+	backend, alloved := balancer.Next()
 	// Начало точного измерения времени
 	startTime := time.Now()
-	if backend == "" {
-		log.Printf("Too many requests")
-		statusCode = fasthttp.StatusTooManyRequests
-		ctx.SetStatusCode(statusCode)
-		ctx.SetBodyString("{\"error\": \"Too many requests\"}")
-	} else {
+	if alloved {
 		fullPath := "http://" + backend + ":5000" + string(ctx.Path())
 
 		// Создание запроса к бэкенду
@@ -188,6 +183,11 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 			ctx.SetStatusCode(statusCode)
 			ctx.SetBody(resp.Body())
 		}
+	} else {
+		log.Printf("Too many requests")
+		statusCode = fasthttp.StatusTooManyRequests
+		ctx.SetStatusCode(statusCode)
+		ctx.SetBodyString("{\"error\": \"Too many requests\"}")
 	}
 
 	// Точное измерение времени выполнения
