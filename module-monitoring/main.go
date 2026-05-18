@@ -175,11 +175,9 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 }
 
 // updateRequestsAndTimestamp обновляет счётчики и временную метку атомарно
-func updateRequestsAndTimestamp(backends []string) error {
-	ts := time.Now().Local().UnixMilli()
-
+func updateRequestsAndTimestamp(backends []string, tm time.Time) error {
 	// Выполняем скрипт
-	err := updateScript.Run(redisClient.Context(), redisClient, backends, ts).Err()
+	err := updateScript.Run(redisClient.Context(), redisClient, backends, tm.Local().UnixMilli()).Err()
 	if err != nil {
 		log.Printf("Failed to update counters for rate limit in Redis: %v", err)
 		return err
@@ -198,7 +196,7 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		for {
-			<-ticker.C
+			tm := <-ticker.C
 			// Получаем строку с адресами из Redis
 			serviceStr, err := redisClient.Get(redisClient.Context(), "target.services").Result()
 			if err != nil {
@@ -210,7 +208,7 @@ func main() {
 				for val := range strings.SplitSeq(serviceStr, ",") {
 					backends = append(backends, val)
 				}
-				updateRequestsAndTimestamp(backends)
+				updateRequestsAndTimestamp(backends, tm)
 			} else {
 				log.Printf("No backends found in Redis")
 			}
@@ -223,7 +221,6 @@ func main() {
 	// Запускаем горутину для логирования количества записей каждую минуту
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
-		// defer ticker.Stop()
 		for {
 			<-ticker.C
 			// Получаем строку с адресами из Redis

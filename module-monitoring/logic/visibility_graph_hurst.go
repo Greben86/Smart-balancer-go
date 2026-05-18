@@ -12,7 +12,7 @@ func getDegrees(data []float64) []float64 {
 	n := len(data)
 	degrees := make([]float64, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		for j := i + 1; j < n; j++ {
 			visible := true
 			// Условие видимости
@@ -32,7 +32,7 @@ func getDegrees(data []float64) []float64 {
 	return degrees
 }
 
-// 2. Оценка показателя Хёрста
+// 2. Оценка показателя Херста
 func calculateHurstVG(degrees []float64, length int) float64 {
 
 	// Подсчет частот P(k)
@@ -87,7 +87,7 @@ func VGHurst(series []float64) (float64, error) {
 	degrees := getDegrees(data)
 	hurst := calculateHurstVG(degrees, length)
 
-	fmt.Printf("Оценка показателя Хёрста (VG): %.4f\n", hurst)
+	fmt.Printf("Оценка показателя Херста (VG): %.4f\n", hurst)
 
 	return hurst, nil
 }
