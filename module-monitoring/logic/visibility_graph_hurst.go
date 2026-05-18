@@ -59,7 +59,7 @@ func calculateHurstVG(degrees []float64, length int) float64 {
 	gamma := math.Abs(gammaRaw)
 
 	// Формула H = (3 - gamma) / 2
-	h := (3.0 - gamma) / 2.0
+	h := (2.0 - gamma) / 2.0
 	return h
 }
 
