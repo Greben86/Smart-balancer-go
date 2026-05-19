@@ -145,10 +145,26 @@ services:
     deploy:
       replicas: 20
 
+  # test-microservice-less:
+  #   build:
+  #     context: ./test-client
+  #     dockerfile: ./Dockerfile
+  #   environment:
+  #     - TARGET_URL=http://registry:8080/heartbeat
+  #     - INTERVAL=1
+  #   networks:
+  #     - service-network
+  #   deploy:
+  #     replicas: 1
+  #     resources:
+  #       limits:
+  #         cpus: '0.1'
+  #         memory: 64M
+
   redis:
     image: redis:8.8-m03-alpine3.23
-    volumes:
-      - redis-data:/data
+    # volumes:
+    #   - redis-data:/data
     command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

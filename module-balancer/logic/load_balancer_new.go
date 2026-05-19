@@ -162,6 +162,7 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 		// } else {
 		// }
 		ratio := int(math.Round(10 * count / hurst))
+		// ratio := int(math.Round(1000 - 10*count/hurst))
 
 		// Выбираем бэкенд с максимальным отношением
 		if ratio < minRatio {

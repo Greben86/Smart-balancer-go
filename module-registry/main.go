@@ -102,6 +102,41 @@ func main() {
 	// Инициализация Redis
 	initRedis()
 
+	// Запуск горутины для периодической очистки устаревших сервисов
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			now := time.Now()
+			servicesMutex.Lock()
+			var expired []string
+			// Сбор устаревших IP
+			for ip, lastHeartbeat := range services {
+				if now.Sub(lastHeartbeat) > (time.Second + 20*time.Microsecond) {
+					expired = append(expired, ip)
+				}
+			}
+			// Удаление устаревших записей
+			for _, ip := range expired {
+				delete(services, ip)
+			}
+			// Формирование обновленного списка
+			var serviceList []string
+			for ip := range services {
+				serviceList = append(serviceList, ip)
+			}
+			servicesMutex.Unlock()
+
+			// Обновление списка в Redis
+			if err := redisClient.Set(redisClient.Context(), "target.services", strings.Join(serviceList, ","), 0).Err(); err != nil {
+				log.Printf("Failed to update target.services in Redis: %v", err)
+			} else {
+				log.Printf("Updated target.services in Redis: %v", strings.Join(serviceList, ","))
+			}
+		}
+	}()
+
 	// Настройка обработчика запросов
 	requestHandler := func(ctx *fasthttp.RequestCtx) {
 		switch string(ctx.Path()) {
@@ -136,21 +171,23 @@ func heartbeatHandler(ctx *fasthttp.RequestCtx) {
 	clientIP := ctx.RemoteIP().String()
 	log.Printf("Heartbeat received from IP: %s", clientIP)
 
-	// Сохраняем или обновляем запись о сервисе
-	servicesMutex.Lock()
-	services[clientIP] = time.Now()
+	go func() {
+		// Сохраняем или обновляем запись о сервисе
+		servicesMutex.Lock()
+		services[clientIP] = time.Now()
 
-	// Формируем строку с адресами через запятую
-	var serviceList []string
-	for ip := range services {
-		serviceList = append(serviceList, ip)
-	}
-	servicesMutex.Unlock()
+		// Формируем строку с адресами через запятую
+		var serviceList []string
+		for ip := range services {
+			serviceList = append(serviceList, ip)
+		}
+		servicesMutex.Unlock()
 
-	// Отправляем список сервисов в Redis
-	if err := redisClient.Set(redisClient.Context(), "target.services", strings.Join(serviceList, ","), 0).Err(); err != nil {
-		log.Printf("Failed to update services.list in Redis: %v", err)
-	}
+		// Отправляем список сервисов в Redis
+		if err := redisClient.Set(redisClient.Context(), "target.services", strings.Join(serviceList, ","), 0).Err(); err != nil {
+			log.Printf("Failed to update services.list in Redis: %v", err)
+		}
+	}()
 
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
