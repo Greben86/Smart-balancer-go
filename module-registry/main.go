@@ -104,16 +104,16 @@ func main() {
 
 	// Запуск горутины для периодической очистки устаревших сервисов
 	go func() {
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
+		ticker := time.NewTicker(time.Millisecond)
+		// defer ticker.Stop()
 
-		for range ticker.C {
-			now := time.Now()
+		for {
+			now := <-ticker.C
 			servicesMutex.Lock()
 			var expired []string
 			// Сбор устаревших IP
 			for ip, lastHeartbeat := range services {
-				if now.Sub(lastHeartbeat) > (time.Second + 20*time.Microsecond) {
+				if now.Sub(lastHeartbeat) > time.Second {
 					expired = append(expired, ip)
 				}
 			}
@@ -128,12 +128,14 @@ func main() {
 			}
 			servicesMutex.Unlock()
 
-			// Обновление списка в Redis
-			if err := redisClient.Set(redisClient.Context(), "target.services", strings.Join(serviceList, ","), 0).Err(); err != nil {
-				log.Printf("Failed to update target.services in Redis: %v", err)
-			} else {
-				log.Printf("Updated target.services in Redis: %v", strings.Join(serviceList, ","))
-			}
+			go func() {
+				// Обновление списка в Redis
+				if err := redisClient.Set(redisClient.Context(), "target.services", strings.Join(serviceList, ","), 0).Err(); err != nil {
+					log.Printf("Failed to update target.services in Redis: %v", err)
+				} else {
+					log.Printf("Updated target.services in Redis: %v", strings.Join(serviceList, ","))
+				}
+			}()
 		}
 	}()
 

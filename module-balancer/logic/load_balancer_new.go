@@ -43,6 +43,8 @@ func NewSmartBalancer2(redisClient *redis.Client) (*SmartBalancer2, error) {
 		}
 	}
 
+	log.Printf("Length of backends: %d", len(backends))
+
 	return &SmartBalancer2{
 		redisClient: redisClient,
 		backends:    backends,
@@ -90,7 +92,7 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 		}
 
 		currentRate := math.Round(preCount*remainingMs/1000 + curCount)
-		log.Printf("Current rate value is [%v * %v / 1000 + %v = %v] for %s", preCount, remainingMs, curCount, currentRate, backend)
+		// log.Printf("Current rate value is [%v * %v / 1000 + %v = %v] for %s", preCount, remainingMs, curCount, currentRate, backend)
 		if currentRate >= 100 {
 			continue
 		}
@@ -142,7 +144,7 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 		// Если не удалось выбрать бэкенд по hurst, используем дополнительный рассчет
 		current := uint64(time.Now().UnixNano())
 		bestBackend := bestBackends[current%uint64(len(bestBackends))]
-		log.Printf("Calculate backend %s from %d values", bestBackend, len(bestBackends))
+		// log.Printf("Calculate backend %s from %d values", bestBackend, len(bestBackends))
 
 		go lb.updateValuesInRedis(bestBackend, nil)
 		return bestBackend, true
@@ -201,8 +203,9 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 func (lb *SmartBalancer2) updateValuesInRedis(backend string, ratioMap map[int]*list.List) {
 	if backend != "" {
 		key := "requests.cur." + backend
-		val, _ := lb.redisClient.Incr(lb.redisClient.Context(), key).Result()
-		log.Printf("Increment value %v of %s in Redis", val, key)
+		lb.redisClient.Incr(lb.redisClient.Context(), key).Err()
+		// val, _ := lb.redisClient.Incr(lb.redisClient.Context(), key).Result()
+		// log.Printf("Increment value %v of %s in Redis", val, key)
 	}
 
 	if len(ratioMap) > 0 {

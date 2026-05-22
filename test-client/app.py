@@ -21,7 +21,7 @@ def send_heartbeat():
             print(f"Heartbeat failed: {e}")
         
         # Ждем заданный интервал (в секундах)
-        time.sleep(float(INTERVAL))
+        time.sleep(0.01)
 
 
 @app.route('/')

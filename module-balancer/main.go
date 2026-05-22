@@ -180,11 +180,14 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 
 			// Копирование статуса и тела
 			statusCode = resp.StatusCode()
+			if statusCode != fasthttp.StatusOK {
+				log.Printf("Error status response %v from %s", statusCode, fullPath)
+			}
 			ctx.SetStatusCode(statusCode)
 			ctx.SetBody(resp.Body())
 		}
 	} else {
-		log.Printf("Too many requests")
+		// log.Printf("Too many requests")
 		statusCode = fasthttp.StatusTooManyRequests
 		ctx.SetStatusCode(statusCode)
 		ctx.SetBodyString("{\"error\": \"Too many requests\"}")
