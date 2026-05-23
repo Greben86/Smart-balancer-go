@@ -17,7 +17,7 @@ import (
 var (
 	port              = flag.String("port", ":8080", "Port to listen on")
 	config            = flag.String("config", "application.yml", "Configuration file")
-	counterMutex      sync.RWMutex
+	errorMutex        sync.RWMutex
 	containerNodeName string
 )
 
@@ -105,13 +105,32 @@ func main() {
 		MaxIdleConnDuration: 30 * time.Second,
 	}
 
+	// Мапа для хранения адресов сервисов, которые вернули ошибку
+	errorBackends := make(map[string]time.Time)
+
+	// Тикер для очистки мапы от старых записей
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		for {
+			currentTime := <-ticker.C
+			errorMutex.Lock()
+			for backend, errorTime := range errorBackends {
+				// Удаляем адрес из мапы, если с момента получения ошибки прошло больше секунды
+				if currentTime.Sub(errorTime) > time.Second {
+					delete(errorBackends, backend)
+				}
+			}
+			errorMutex.Unlock()
+		}
+	}()
+
 	// Настройка обработчика запросов
 	requestHandler := func(ctx *fasthttp.RequestCtx) {
 		switch string(ctx.Path()) {
 		case "/health":
 			healthHandler(ctx)
 		default:
-			proxyHandler(ctx, httpClient)
+			proxyHandler(ctx, httpClient, errorBackends)
 		}
 	}
 
@@ -133,9 +152,19 @@ func backendsJSON(backends []string) string {
 	return string(json)
 }
 
-func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
+func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client, errorBackends map[string]time.Time) {
 	var statusCode int
-	balancer, err := logic.NewSmartBalancer2(redisClient)
+
+	// Преобразуем мапу с ошибками в массив адресов для передачи в балансировщик
+	errorMutex.RLock()
+	excludedBackends := make([]string, 0, len(errorBackends))
+	for backend := range errorBackends {
+		excludedBackends = append(excludedBackends, backend)
+	}
+	errorMutex.RUnlock()
+
+	// Создаем экземпляр балансировщика, передавая список исключенных бэкендов
+	balancer, err := logic.NewSmartBalancer2(redisClient, excludedBackends)
 	if err != nil {
 		log.Printf("Error creating balancer instance: %v", err)
 		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
@@ -172,6 +201,12 @@ func proxyHandler(ctx *fasthttp.RequestCtx, client *fasthttp.Client) {
 			statusCode = fasthttp.StatusServiceUnavailable
 			ctx.SetStatusCode(statusCode)
 			ctx.SetBodyString("{\"error\": \"Backend service unavailable\"}")
+			// Сохраняем адрес сервиса и время получения ошибки
+			errorMutex.Lock()
+			if _, exists := errorBackends[backend]; !exists {
+				errorBackends[backend] = time.Now()
+			}
+			errorMutex.Unlock()
 		} else {
 			// Копирование заголовков ответа
 			resp.Header.VisitAll(func(key, value []byte) {

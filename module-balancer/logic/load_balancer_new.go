@@ -18,7 +18,7 @@ type SmartBalancer2 struct {
 	backends    []string
 }
 
-func NewSmartBalancer2(redisClient *redis.Client) (*SmartBalancer2, error) {
+func NewSmartBalancer2(redisClient *redis.Client, excludedBackends []string) (*SmartBalancer2, error) {
 	// Получаем строку с адресами из Redis
 	result, err := redisClient.Get(redisClient.Context(), "target.services").Result()
 	if err != nil {
@@ -35,10 +35,16 @@ func NewSmartBalancer2(redisClient *redis.Client) (*SmartBalancer2, error) {
 	addresses := strings.Split(result, ",")
 	backends := make([]string, 0, len(addresses))
 
-	// Формируем полные URL для каждого адреса
+	// Создаем map для быстрого поиска исключенных бэкендов
+	excludedMap := make(map[string]bool)
+	for _, backend := range excludedBackends {
+		excludedMap[backend] = true
+	}
+
+	// Формируем полные URL для каждого адреса, исключая те, что в списке excludedBackends
 	for _, addr := range addresses {
 		addr = strings.TrimSpace(addr)
-		if addr != "" {
+		if addr != "" && !excludedMap[addr] {
 			backends = append(backends, addr)
 		}
 	}
