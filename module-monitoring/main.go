@@ -233,32 +233,34 @@ func main() {
 				// Разделяем строку по запятым и формируем список адресов
 				backends := strings.SplitSeq(serviceStr, ",")
 				for backend := range backends {
-					if value, exists := backendNews[backend]; !exists || value.Load() == 0 {
+					hurst := .5
+					if value, exists := backendNews[backend]; exists && value.Load() > 0 {
+						log.Printf("Backend: %s", backend)
+						// Преобразуем list.List в []float64 при необходимости
+						var values []float64
+						if backendValues[backend] != nil {
+							valuesMutex.RLock()
+							values = make([]float64, 0, backendValues[backend].Len())
+							for e := backendValues[backend].Front(); e != nil; e = e.Next() {
+								if val, ok := e.Value.(float64); ok {
+									values = append(values, val)
+								}
+							}
+							valuesMutex.RUnlock()
+						}
+	
+						// Подсчитываем Херст для текущего списка значений
+						hurst, _ = logic.VGHurst(values)
+					} else if values, exists := backendValues[backend]; !exists || values.Len() == 0 {
+						// Еще нет никаких метрик для этого бэкенда
+						// Значения Херста тоже быть не должно
+						redisClient.Del(redisClient.Context(), "service.hurst."+backend)
 						continue
 					}
-
-					log.Printf("Backend: %s", backend)
-					// Преобразуем list.List в []float64 при необходимости
-					var values []float64
-					if backendValues[backend] != nil {
-						valuesMutex.RLock()
-						values = make([]float64, 0, backendValues[backend].Len())
-						for e := backendValues[backend].Front(); e != nil; e = e.Next() {
-							if val, ok := e.Value.(float64); ok {
-								values = append(values, val)
-							}
-						}
-						valuesMutex.RUnlock()
-					}
-
-					// Подсчитываем Херст для текущего списка значений
-					hurst, _ := logic.VGHurst(values)
 
 					// Отправляем параметр Херста в Redis
 					if err := redisClient.Set(redisClient.Context(), "service.hurst."+backend, hurst, 0).Err(); err != nil {
 						log.Printf("Failed to update service.hurst.%s in Redis: %v", backend, err)
-					} else {
-						log.Printf("Updated service.hurst.%s in Redis with value %f", backend, hurst)
 					}
 
 					// Обновляем метрику Prometheus

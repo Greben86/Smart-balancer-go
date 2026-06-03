@@ -12,6 +12,9 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+var maxRateValue int64 = 100
+var durationControlIntervalMs int64 = 1000
+
 // SmartBalancer реализует балансировку
 type SmartBalancer2 struct {
 	redisClient *redis.Client
@@ -64,7 +67,7 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 	}
 
 	// Получаем время начала текущего периода
-	var remainingMs float64
+	var remainingMs int64
 	timestampKey := "timestamp.current"
 	timestampStr, err := lb.redisClient.Get(lb.redisClient.Context(), timestampKey).Result()
 	if err != nil {
@@ -74,42 +77,42 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 		timestamp, _ := strconv.ParseInt(timestampStr, 10, 64)
 		now := time.Now().Local().UnixMilli()
 		elapsedMs := now - timestamp
-		remainingMs = float64(max(1000-elapsedMs, 0))
+		remainingMs = max(durationControlIntervalMs-elapsedMs, 0)
 	}
 
-	hurstValues := make(map[string]float64)
-	rateValues := make(map[string]float64)
-	prevRatioMap := make(map[string]float64)
+	hurstValues := make(map[string]int64)
+	availableRateValues := make(map[string]int64)
+	prevRatioMap := make(map[string]int64)
 	for _, backend := range lb.backends {
-		var preCount float64
+		var preCount int64
 		preCountStr, err := lb.redisClient.Get(lb.redisClient.Context(), "requests.prev."+backend).Result()
 		if err != nil {
 			preCount = 0
 		} else {
-			preCount, _ = strconv.ParseFloat(preCountStr, 64)
+			preCount, _ = strconv.ParseInt(preCountStr, 10, 64)
 		}
 
-		var curCount float64
+		var curCount int64
 		curCountStr, err := lb.redisClient.Get(lb.redisClient.Context(), "requests.cur."+backend).Result()
 		if err != nil {
 			curCount = 0
 		} else {
-			curCount, _ = strconv.ParseFloat(curCountStr, 64)
+			curCount, _ = strconv.ParseInt(curCountStr, 10, 64)
 		}
 
-		currentRate := math.Round(preCount*remainingMs/1000 + curCount)
+		currentRate := preCount*remainingMs/durationControlIntervalMs + curCount
 		// log.Printf("Current rate value is [%v * %v / 1000 + %v = %v] for %s", preCount, remainingMs, curCount, currentRate, backend)
-		if currentRate >= 100 {
+		if currentRate >= maxRateValue {
 			continue
 		}
 
-		rateValues[backend] = currentRate
+		availableRateValues[backend] = maxRateValue - currentRate
 
 		prevRatioStr, err := lb.redisClient.Get(lb.redisClient.Context(), "ratio.prev."+backend).Result()
 		if err != nil {
-			prevRatioMap[backend] = 0 // Если ключ не найден, используем 0 [
+			prevRatioMap[backend] = 0 // Если ключ не найден, используем 0
 		} else {
-			prevRatio, _ := strconv.ParseFloat(prevRatioStr, 64)
+			prevRatio, _ := strconv.ParseInt(prevRatioStr, 10, 64)
 			prevRatioMap[backend] = prevRatio
 		}
 
@@ -131,19 +134,19 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 			continue
 		}
 
-		hurstValues[backend] = hurst
+		hurstValues[backend] = int64(math.Round(10 * hurst))
 	}
 
 	// Если нет бэкендов, которые могут обработать запрос
-	if len(rateValues) == 0 {
+	if len(availableRateValues) == 0 {
 		current := uint64(time.Now().UnixNano())
 		return lb.backends[current%uint64(len(lb.backends))], false
 	}
 
 	// Если не нельзя выбрать бэкенд по hurst, используем рассчет
-	if len(rateValues) != len(hurstValues) {
-		bestBackends := make([]string, 0, len(rateValues))
-		for backend := range rateValues {
+	if len(availableRateValues) != len(hurstValues) {
+		bestBackends := make([]string, 0, len(availableRateValues))
+		for backend := range availableRateValues {
 			bestBackends = append(bestBackends, backend)
 		}
 
@@ -157,9 +160,9 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 	}
 
 	var bestBackend string
-	var minRatio = math.MaxInt64
-	var ratioMap = make(map[int]*list.List)
-	for backend, count := range rateValues {
+	var maxRatio int64 = math.MinInt64
+	var ratioMap = make(map[int64]*list.List)
+	for backend, count := range availableRateValues {
 		hurst := hurstValues[backend]
 
 		// var ratio int
@@ -169,12 +172,12 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 		// 	ratio = int(math.Round((prevRatio + (10 * float64(count) / hurst)) / 2))
 		// } else {
 		// }
-		ratio := int(math.Round(10 * count / hurst))
+		ratio := count / hurst
 		// ratio := int(math.Round(1000 - 10*count/hurst))
 
-		// Выбираем бэкенд с максимальным отношением
-		if ratio < minRatio {
-			minRatio = ratio
+		// Выбираем бэкенд с минимальным соотношением
+		if ratio > maxRatio {
+			maxRatio = ratio
 			bestBackend = backend
 		}
 
@@ -184,9 +187,9 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 		ratioMap[ratio].PushBack(backend)
 	}
 
-	if ratioMap[minRatio].Len() > 1 {
-		bestBackends := make([]string, 0, ratioMap[minRatio].Len())
-		for e := ratioMap[minRatio].Front(); e != nil; e = e.Next() {
+	if ratioMap[maxRatio].Len() > 1 {
+		bestBackends := make([]string, 0, ratioMap[maxRatio].Len())
+		for e := ratioMap[maxRatio].Front(); e != nil; e = e.Next() {
 			if val, ok := e.Value.(string); ok {
 				bestBackends = append(bestBackends, val)
 			}
@@ -195,9 +198,6 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 		// Если не удалось выбрать бэкенд по hurst, используем дополнительный рассчет
 		current := uint64(time.Now().UnixNano())
 		bestBackend = bestBackends[current%uint64(len(bestBackends))]
-		// log.Printf("Calculate backend %s from %d values", bestBackend, len(bestBackends))
-	} else {
-		// log.Printf("The best backend from %d is %s ratio = %v", len(lb.backends), bestBackend, minRatio)
 	}
 
 	go lb.updateValuesInRedis(bestBackend, ratioMap)
@@ -206,12 +206,10 @@ func (lb *SmartBalancer2) Next() (string, bool) {
 }
 
 // Увеличиваем счётчик запросов по IP
-func (lb *SmartBalancer2) updateValuesInRedis(backend string, ratioMap map[int]*list.List) {
+func (lb *SmartBalancer2) updateValuesInRedis(backend string, ratioMap map[int64]*list.List) {
 	if backend != "" {
 		key := "requests.cur." + backend
 		lb.redisClient.Incr(lb.redisClient.Context(), key).Err()
-		// val, _ := lb.redisClient.Incr(lb.redisClient.Context(), key).Result()
-		// log.Printf("Increment value %v of %s in Redis", val, key)
 	}
 
 	if len(ratioMap) > 0 {

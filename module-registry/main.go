@@ -128,14 +128,21 @@ func main() {
 			}
 			servicesMutex.Unlock()
 
-			go func() {
-				// Обновление списка в Redis
-				if err := redisClient.Set(redisClient.Context(), "target.services", strings.Join(serviceList, ","), 0).Err(); err != nil {
-					log.Printf("Failed to update target.services in Redis: %v", err)
-				} else {
-					log.Printf("Updated target.services in Redis: %v", strings.Join(serviceList, ","))
-				}
-			}()
+			if len(expired) > 0 {
+				go func() {
+					// Обновление списка в Redis
+					if err := redisClient.Set(redisClient.Context(), "target.services", strings.Join(serviceList, ","), 0).Err(); err != nil {
+						log.Printf("Failed to update target.services in Redis: %v", err)
+					}
+					// Удаление устаревших записей
+					for _, ip := range expired {
+						redisClient.Del(redisClient.Context(), "service.hurst."+ip)
+						redisClient.Del(redisClient.Context(), "requests.prev."+ip)
+						redisClient.Del(redisClient.Context(), "requests.cur."+ip)
+						redisClient.Del(redisClient.Context(), "ratio.prev."+ip)
+					}
+				}()
+			}
 		}
 	}()
 
